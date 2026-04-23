@@ -265,6 +265,7 @@
       case "pgup":  return tilde(5);
       case "pgdn":  return tilde(6);
       case "home":  return csi("H");
+      case "end":   return csi("F");
       default: return "";
     }
   }
