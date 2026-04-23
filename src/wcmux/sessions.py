@@ -5,11 +5,30 @@ import collections
 import re
 import secrets
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Optional
 
 from .cwd import read_cwd, shorten as shorten_cwd
 from .terminal import Terminal, spawn as spawn_terminal
+
+# OSC sequence: ESC ] N ; payload ST (ST = BEL or ESC \)
+_OSC_RE = re.compile(r"\x1b\](\d+);([^\x07\x1b]*?)(?:\x07|\x1b\\)")
+_OSC_BUF_MAX = 4096
+
+
+def _decode_osc7(payload: str) -> Optional[str]:
+    """Parse `file://HOST/encoded-path` from an OSC 7 payload."""
+    if not payload.startswith("file://"):
+        return None
+    rest = payload[len("file://"):]
+    slash = rest.find("/")
+    if slash < 0:
+        return None
+    try:
+        return urllib.parse.unquote(rest[slash:])
+    except Exception:
+        return None
 
 MAX_TABS = 20
 BUFFER_BYTES = 256 * 1024
@@ -41,6 +60,10 @@ class TabState:
     subscribers: list[asyncio.Queue] = field(default_factory=list)
     # spec §4.11: resize merges across subscribers by taking element-wise min
     viewports: dict[int, tuple[int, int]] = field(default_factory=dict)
+    # Shell-reported name via OSC 0/2 is ignored once the user has renamed manually.
+    name_user_set: bool = False
+    # Rolling buffer for OSC parsing across PTY read boundaries.
+    osc_buf: str = ""
 
     def append_output(self, chunk: str) -> None:
         self.buffer.append(chunk)
@@ -144,6 +167,7 @@ class SessionRegistry:
                         q.put_nowait(("output", chunk))
                     except asyncio.QueueFull:
                         pass
+                self._consume_osc(tab, chunk)
         except EOFError:
             for q in list(tab.subscribers):
                 try:
@@ -196,10 +220,51 @@ class SessionRegistry:
         if not name:
             return False
         tab.name = name
+        tab.name_user_set = True
         ws = self._workspaces.get(tab.workspace_id)
         if ws:
             self._broadcast_tabs_changed(ws)
         return True
+
+    def _consume_osc(self, tab: TabState, chunk: str) -> None:
+        """Parse OSC 7 (cwd) / OSC 0/2 (title) from the shell's output stream.
+        Matches may span chunk boundaries; we keep a bounded tail buffer."""
+        buf = tab.osc_buf + chunk
+        cwd_changed = False
+        title_changed = False
+        last_end = 0
+        for m in _OSC_RE.finditer(buf):
+            ps = int(m.group(1))
+            payload = m.group(2)
+            last_end = m.end()
+            if ps == 7:
+                cwd = _decode_osc7(payload)
+                if cwd and cwd != tab.cwd_full:
+                    tab.cwd_full = cwd
+                    tab.cwd_display = shorten_cwd(cwd)
+                    cwd_changed = True
+            elif ps in (0, 2):
+                title = payload.strip()[:80]
+                if title and not tab.name_user_set and title != tab.name:
+                    tab.name = title
+                    title_changed = True
+
+        # Keep only a possibly-incomplete trailing OSC for the next chunk.
+        tail = buf[last_end:]
+        idx = tail.rfind("\x1b]")
+        tab.osc_buf = tail[idx:][:_OSC_BUF_MAX] if idx >= 0 else ""
+
+        if cwd_changed:
+            for q in list(tab.subscribers):
+                try:
+                    q.put_nowait(("cwd", {"full": tab.cwd_full,
+                                          "display": tab.cwd_display}))
+                except asyncio.QueueFull:
+                    pass
+        if title_changed:
+            ws = self._workspaces.get(tab.workspace_id)
+            if ws:
+                self._broadcast_tabs_changed(ws)
 
     def list_tabs(self, workspace_id: str) -> list[dict]:
         ws = self._workspaces.get(workspace_id)
