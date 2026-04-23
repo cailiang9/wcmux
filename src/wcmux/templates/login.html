@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>wcmux · login</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { background: #111; color: #ddd; font-family: system-ui, sans-serif;
+           display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+    form { background: #1a1a1a; padding: 2rem 2.5rem; border-radius: 8px;
+           box-shadow: 0 4px 20px rgba(0,0,0,.4); min-width: 280px; }
+    h1 { margin: 0 0 1rem; font-size: 1.2rem; color: #7cf; }
+    label { display: block; margin: 1rem 0 .4rem; font-size: .85rem; color: #aaa; }
+    input[type=password] { width: 100%; padding: .5rem .6rem; background: #222;
+           color: #eee; border: 1px solid #333; border-radius: 4px; box-sizing: border-box; }
+    button { margin-top: 1.2rem; width: 100%; padding: .5rem;
+           background: #2a5; color: #fff; border: 0; border-radius: 4px;
+           cursor: pointer; font-weight: bold; }
+    button:hover { background: #3b6; }
+    .error { color: #f77; font-size: .85rem; margin-top: .6rem; min-height: 1em; }
+  </style>
+</head>
+<body>
+  <form method="POST" action="{{ base_url }}/login">
+    <h1>wcmux</h1>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autofocus required />
+    <input type="hidden" name="next" value="{{ next }}" />
+    <div class="error">{% if error %}{{ error }}{% endif %}</div>
+    <button type="submit">Sign in</button>
+  </form>
+</body>
+</html>

@@ -1,0 +1,42 @@
+html, body { margin: 0; padding: 0; height: 100%; background: #0c0c0c; color: #ddd;
+              font-family: system-ui, sans-serif; overflow: hidden; }
+#toolbar { display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+           background: #181818; border-bottom: 1px solid #222; height: 36px; box-sizing: border-box; }
+#toolbar .brand { font-weight: bold; color: #7cf; margin-right: 6px; }
+#tabs { display: flex; gap: 4px; overflow-x: auto; flex: 1 1 auto; }
+.tab { display: flex; align-items: center; gap: 6px; padding: 3px 8px;
+       background: #222; border: 1px solid #2a2a2a; border-radius: 3px;
+       cursor: pointer; color: #ccc; font-size: .85rem; white-space: nowrap; max-width: 280px; }
+.tab:hover { background: #2a2a2a; }
+.tab.active { background: #2d4a6a; border-color: #3a5f86; color: #fff; }
+.tab.unread:not(.active) .name::after { content: " •"; color: #7cf; font-weight: bold; }
+.tab .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+.tab .sep { color: #777; }
+.tab .cwd { color: #8aa; overflow: hidden; text-overflow: ellipsis; }
+.tab .close { margin-left: 4px; color: #888; padding: 0 4px; border-radius: 2px; }
+.tab .close:hover { background: #500; color: #fff; }
+#new-tab { background: #222; color: #ccc; border: 1px solid #333;
+           width: 28px; height: 24px; border-radius: 3px; cursor: pointer; font-size: 1rem; }
+#new-tab:hover { background: #2a2a2a; }
+#new-tab:disabled { opacity: .4; cursor: not-allowed; }
+#status { color: #888; font-size: .8rem; min-width: 80px; }
+#status.ok { color: #5b5; }
+#status.err { color: #f66; }
+button.logout { background: #333; color: #ccc; border: 1px solid #444;
+           padding: 3px 10px; border-radius: 3px; cursor: pointer; }
+button.logout:hover { background: #444; }
+#terminals { position: absolute; top: 36px; bottom: 40px; left: 0; right: 0; }
+.term-wrap { position: absolute; top: 0; bottom: 0; left: 0; right: 0; padding: 4px; box-sizing: border-box;
+             display: none; }
+.term-wrap.active { display: block; }
+
+#keypad { position: absolute; left: 0; right: 0; bottom: 0; height: 40px;
+          display: flex; gap: 4px; padding: 4px 6px; box-sizing: border-box;
+          background: #151515; border-top: 1px solid #222;
+          overflow-x: auto; white-space: nowrap; }
+.kp { flex: 0 0 auto; min-width: 44px; padding: 4px 10px; background: #222; color: #ccc;
+      border: 1px solid #333; border-radius: 3px; cursor: pointer;
+      font-family: Menlo, monospace; font-size: .9rem; user-select: none; }
+.kp:hover { background: #2a2a2a; }
+.kp:active { background: #3a3a3a; }
+.kp.mod.on { background: #2d4a6a; border-color: #3a5f86; color: #fff; }

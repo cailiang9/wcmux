@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wcmux"
+version = "0.1.0"
+description = "Web-based cmux — FastAPI terminal multiplexer with tabs."
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "MIT" }
+dependencies = [
+    "fastapi>=0.110,<1",
+    "uvicorn[standard]>=0.27",
+    "itsdangerous>=2",
+    "jinja2>=3",
+    "python-multipart>=0.0.9",
+    "psutil>=5.9",
+    "ptyprocess>=0.7 ; platform_system != 'Windows'",
+    "pywinpty>=2.0 ; platform_system == 'Windows'",
+]
+
+[project.scripts]
+wcmux = "wcmux.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+wcmux = ["templates/*.html", "static/*.js", "static/*.css"]

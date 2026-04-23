@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>wcmux</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <link rel="stylesheet" href="{{ base_url }}/static/style.css" />
+</head>
+<body>
+  <div id="toolbar">
+    <span class="brand">wcmux</span>
+    <div id="tabs"></div>
+    <button id="new-tab" title="New tab (Ctrl+Alt+T)">+</button>
+    <span id="status" class="status">connecting…</span>
+    <form method="POST" action="{{ base_url }}/logout" style="margin-left:auto">
+      <button type="submit" class="logout">logout</button>
+    </form>
+  </div>
+  <div id="terminals"></div>
+  <div id="keypad">
+    <button class="kp mod" data-mod="ctrl"  title="Ctrl (sticky)">Ctrl</button>
+    <button class="kp mod" data-mod="alt"   title="Alt (sticky)">Alt</button>
+    <button class="kp"     data-key="esc"   title="Escape">Esc</button>
+    <button class="kp"     data-key="tab"   title="Tab">Tab</button>
+    <button class="kp"     data-key="left"  title="Left">←</button>
+    <button class="kp"     data-key="up"    title="Up">↑</button>
+    <button class="kp"     data-key="down"  title="Down">↓</button>
+    <button class="kp"     data-key="right" title="Right">→</button>
+    <button class="kp"     data-key="pgup"  title="Page Up">PgUp</button>
+    <button class="kp"     data-key="pgdn"  title="Page Down">PgDn</button>
+  </div>
+  <script>
+    window.WCMUX_BASE_URL = {{ base_url|tojson }};
+  </script>
+  <script src="{{ base_url }}/static/app.js"></script>
+</body>
+</html>
