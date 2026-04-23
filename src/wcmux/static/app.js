@@ -12,9 +12,20 @@
   const tabs = new Map();
   let activeId = null;
 
-  function setStatus(text, cls) {
-    statusEl.textContent = text;
-    statusEl.className = "status" + (cls ? " " + cls : "");
+  function updateIndicator() {
+    let anyOpen = false, anyConnecting = false;
+    for (const t of tabs.values()) {
+      if (!t.ws) { anyConnecting = true; continue; }
+      const rs = t.ws.readyState;
+      if (rs === WebSocket.OPEN) anyOpen = true;
+      else if (rs === WebSocket.CONNECTING) anyConnecting = true;
+    }
+    if (tabs.size === 0) {
+      statusEl.className = "status warn"; statusEl.title = "loading"; return;
+    }
+    if (anyOpen) { statusEl.className = "status ok"; statusEl.title = "connected"; }
+    else if (anyConnecting) { statusEl.className = "status warn"; statusEl.title = "reconnecting"; }
+    else { statusEl.className = "status err"; statusEl.title = "disconnected"; }
   }
 
   function api(method, path, body) {
@@ -100,19 +111,45 @@
     t.wrap = wrap;
   }
 
+  const RECONNECT_MIN_MS = 1000;
+
   function connectTab(t) {
+    const now = Date.now();
+    if (t.ws && (t.ws.readyState === WebSocket.OPEN || t.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    if (t.lastConnectAt && now - t.lastConnectAt < RECONNECT_MIN_MS) {
+      return;  // throttle per-tab reconnects (spec §4.9)
+    }
+    t.lastConnectAt = now;
+
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const url = `${proto}://${location.host}${BASE}/ws/${t.id}`;
     const ws = new WebSocket(url);
     t.ws = ws;
+    updateIndicator();
+
     ws.onopen = () => {
       sendResize(t);
-      setStatus("connected", "ok");
+      updateIndicator();
     };
-    ws.onclose = () => {
-      if (tabs.has(t.id)) setStatus("disconnected", "err");
+    ws.onclose = (ev) => {
+      // backend explicit rejects:
+      //   4401 — session expired; redirect to login
+      //   4404 — tab no longer exists (5-min retention expired, or shell exited)
+      if (ev.code === 4401) {
+        window.location.href = BASE + "/login";
+        return;
+      }
+      if (ev.code === 4404) {
+        // silently drop this tab locally
+        cleanupLocalTab(t.id);
+        updateIndicator();
+        return;
+      }
+      updateIndicator();
     };
-    ws.onerror = () => setStatus("error", "err");
+    ws.onerror = () => updateIndicator();
     ws.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
@@ -127,9 +164,26 @@
         t.cwdFull = msg.full || "";
         renderTab(t);
       } else if (msg.type === "exit") {
-        // tab exited; visual cue only — user can close it.
+        // Shell exited (Ctrl-D / exit / kill) — auto-close the tab (spec §4.8)
+        closeTab(t.id);
       }
     };
+  }
+
+  function cleanupLocalTab(id) {
+    const t = tabs.get(id);
+    if (!t) return;
+    try { t.ws && t.ws.close(); } catch {}
+    try { t.term.dispose(); } catch {}
+    if (t.tabEl) t.tabEl.remove();
+    if (t.wrap) t.wrap.remove();
+    tabs.delete(id);
+    updateNewTabButton();
+    if (activeId === id) {
+      const first = tabs.keys().next().value;
+      if (first) activate(first);
+      else createTab();
+    }
   }
 
   function sendResize(t) {
@@ -178,26 +232,15 @@
       addTab(meta);
       activate(meta.tab_id);
     } catch (e) {
-      setStatus("create failed", "err");
+      updateIndicator();
     }
   }
 
   async function closeTab(id) {
-    const t = tabs.get(id);
-    if (!t) return;
-    try { t.ws && t.ws.close(); } catch {}
-    try { t.term.dispose(); } catch {}
-    if (t.tabEl) t.tabEl.remove();
-    if (t.wrap) t.wrap.remove();
-    tabs.delete(id);
+    if (!tabs.has(id)) return;
+    cleanupLocalTab(id);
     try { await api("DELETE", "/api/tabs/" + encodeURIComponent(id)); } catch {}
-    updateNewTabButton();
-
-    if (activeId === id) {
-      const first = tabs.keys().next().value;
-      if (first) activate(first);
-      else createTab();  // ensure at least one tab
-    }
+    updateIndicator();
   }
 
   async function renameTab(id, name) {
@@ -208,7 +251,7 @@
       t.name = name;
       renderTab(t);
     } catch (e) {
-      setStatus("rename failed", "err");
+      /* ignore rename errors */
     }
   }
 
@@ -339,9 +382,25 @@
         activate(existing[0].tab_id);
       }
     } catch (e) {
-      setStatus("load failed", "err");
+      updateIndicator();
     }
   }
+
+  function reconnectStaleTabs() {
+    for (const t of tabs.values()) {
+      if (!t.ws || t.ws.readyState === WebSocket.CLOSED || t.ws.readyState === WebSocket.CLOSING) {
+        connectTab(t);
+      }
+    }
+    updateIndicator();
+  }
+
+  // Spec §4.9: attempt reconnect when the page regains focus / becomes visible / network returns
+  window.addEventListener("focus", reconnectStaleTabs);
+  window.addEventListener("online", reconnectStaleTabs);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") reconnectStaleTabs();
+  });
 
   bootstrap();
 })();

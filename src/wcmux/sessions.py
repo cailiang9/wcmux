@@ -133,6 +133,15 @@ class SessionRegistry:
                     q.put_nowait(("exit", 0))
                 except asyncio.QueueFull:
                     pass
+            # Shell exited (Ctrl-D / exit / kill) — drop the tab from the session
+            # so future reconnects don't revive a dead shell.
+            us = self._sessions.get(sid)
+            if us:
+                us.tabs.pop(tab.tab_id, None)
+            try:
+                tab.terminal.close()
+            except Exception:
+                pass
         except asyncio.CancelledError:
             raise
         except Exception:
