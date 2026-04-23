@@ -105,8 +105,9 @@ async def main() -> int:
 
     # Use isolated workspaces — spec §4.10 / §4.11 changed semantics so state
     # now persists across logouts. Fresh workspace gives clean state.
-    WS = "m3a"
-    WS_Q = f"?workspace={WS}"
+    import tempfile
+    WS_DIR = tempfile.mkdtemp(prefix="wcmux-m3a-")
+    WS_Q = f"?cwd={urllib.parse.quote(WS_DIR)}"
 
     # 1) list initially empty for a fresh workspace
     code, _, body = client.request("GET", f"/api/tabs{WS_Q}")
@@ -199,9 +200,9 @@ async def main() -> int:
     # Explicit cleanup of the lingering tab (since logout no longer kills)
     c2.request("DELETE", f"/api/tabs/{t1['tab_id']}")
 
-    # 9) cap at MAX_TABS (20) — fresh workspace `m3b` so count starts at 0
-    WS_CAP = "m3b"
-    WS_CAP_Q = f"?workspace={WS_CAP}"
+    # 9) cap at MAX_TABS (20) — fresh workspace dir so count starts at 0
+    WS_CAP_DIR = tempfile.mkdtemp(prefix="wcmux-m3b-")
+    WS_CAP_Q = f"?cwd={urllib.parse.quote(WS_CAP_DIR)}"
     c3 = Client(BASE); login(c3)
     last_code = None
     for i in range(20):

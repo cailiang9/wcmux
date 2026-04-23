@@ -68,7 +68,9 @@ async def main() -> int:
     c = Client(BASE)
     code, _ = c.request("POST", "/login", form={"password": PW})
     assert code in (302, 303), f"login {code}"
-    code, body = c.request("POST", "/api/tabs?workspace=m9")
+    import tempfile
+    WS_DIR = tempfile.mkdtemp(prefix="wcmux-m9-")
+    code, body = c.request("POST", f"/api/tabs?cwd={urllib.parse.quote(WS_DIR)}")
     assert code == 200
     tab = json.loads(body); tid = tab["tab_id"]
 
@@ -124,7 +126,7 @@ async def main() -> int:
                         f"name_after={name_after!r}"))
 
         # --- confirm API snapshot agrees
-        _, body = c.request("GET", "/api/tabs?workspace=m9")
+        _, body = c.request("GET", f"/api/tabs?cwd={urllib.parse.quote(WS_DIR)}")
         data = json.loads(body)
         snap_name = next((t["name"] for t in data["tabs"] if t["tab_id"] == tid), None)
         results.append(("snapshot reflects pinned name", snap_name == "user-pinned",

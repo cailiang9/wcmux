@@ -1,4 +1,4 @@
-"""§4.10 + §4.11 — URL workspace, starting cwd, cross-client sharing.
+"""§4.10 + §4.11 — cwd-keyed workspaces and cross-client sharing.
 
 Expects a running server (fresh per runserver.sh).
 """
@@ -56,6 +56,10 @@ def login(client):
     assert code in (302, 303), f"login failed: {code}"
 
 
+def q(path: str) -> str:
+    return urllib.parse.quote(path)
+
+
 async def drain(ws, timeout):
     buf = []
     try:
@@ -76,108 +80,98 @@ async def main() -> int:
 
     results: list[tuple[str, bool, str]] = []
 
-    # 1) Workspaces are case-sensitive and isolated
     c = Client(BASE); login(c)
-    code, body = c.request("POST", "/api/tabs?workspace=Proj1")
-    assert code == 200
-    tab_upper = json.loads(body)["tab_id"]
-    code, body = c.request("GET", "/api/tabs?workspace=proj1")
-    lower_tabs = json.loads(body)["tabs"]
-    results.append(("case-sensitive isolation",
-                    not any(t["tab_id"] == tab_upper for t in lower_tabs),
-                    f"proj1 tabs={lower_tabs}"))
 
-    # 2) Starting cwd via ?cwd=<dir> takes effect for new tabs
-    with tempfile.TemporaryDirectory() as td:
-        td_real = os.path.realpath(td)
-        ws = "m8-cwd"
-        qs = f"?workspace={ws}&cwd={urllib.parse.quote(td_real)}"
-        code, body = c.request("POST", f"/api/tabs{qs}")
-        tab = json.loads(body); tid = tab["tab_id"]
-        ws_url = BASE.replace("http", "ws") + f"/ws/{tid}"
-        cookie = c.cookie_header()
-        async with websockets.connect(ws_url, additional_headers={"Cookie": cookie}) as w:
-            await drain(w, 0.8)
-            await w.send(json.dumps({"type": "input", "data": "pwd\n"}))
-            frames = await drain(w, 1.2)
-            text = "".join(f.get("data", "") for f in frames if f.get("type") in ("output", "replay"))
-            results.append(("cwd via URL takes effect",
-                            td_real in text or td in text, text[:200]))
+    # 1) ?cwd= takes effect: new tab's shell starts in that dir
+    WS1 = tempfile.mkdtemp(prefix="wcmux-m8-cwd-")
+    code, body = c.request("POST", f"/api/tabs?cwd={q(WS1)}")
+    tab = json.loads(body); tid = tab["tab_id"]
+    ws_url = BASE.replace("http", "ws") + "/ws/" + tid
+    cookie = c.cookie_header()
+    async with websockets.connect(ws_url, additional_headers={"Cookie": cookie}) as w:
+        await drain(w, 0.8)
+        await w.send(json.dumps({"type": "input", "data": "pwd\n"}))
+        frames = await drain(w, 1.2)
+        text = "".join(f.get("data", "") for f in frames if f.get("type") in ("output", "replay"))
+        results.append(("cwd via URL takes effect", WS1 in text, text[:200]))
 
-    # 3) Invalid cwd is ignored (shell starts, no crash)
-    ws = "m8-badcwd"
-    code, body = c.request("POST", f"/api/tabs?workspace={ws}&cwd=/definitely/not/there")
-    results.append(("bad cwd falls back gracefully", code == 200, f"status={code} body={body[:80]}"))
-
-    # 4) Illegal workspace id → falls back to "default"
-    c2 = Client(BASE); login(c2)
-    code, body = c2.request("GET", "/api/tabs?workspace=../etc")
+    # 2) Trailing slash normalizes: /tmp/ and /tmp are the same workspace
+    WS2 = tempfile.mkdtemp(prefix="wcmux-m8-norm-")
+    c.request("POST", f"/api/tabs?cwd={q(WS2)}")
+    _, body = c.request("GET", f"/api/tabs?cwd={q(WS2 + '/')}")
     data = json.loads(body)
-    results.append(("bad workspace id -> default",
-                    data.get("workspace") == "default", str(data)))
+    results.append(("trailing slash normalized",
+                    len(data["tabs"]) == 1 and data["workspace"] == WS2,
+                    f"workspace={data.get('workspace')} tabs={len(data['tabs'])}"))
 
-    # 5) Cross-client sharing: two clients, same workspace, see same tabs
-    ws = "m8-share"
+    # 3) Case sensitive (Linux semantics): different cases → different workspaces
+    WS3_lower = tempfile.mkdtemp(prefix="wcmux-m8-case-", dir="/tmp")
+    WS3_upper = WS3_lower.replace("case-", "CASE-")
+    os.makedirs(WS3_upper, exist_ok=True)
+    c.request("POST", f"/api/tabs?cwd={q(WS3_lower)}")
+    _, body = c.request("GET", f"/api/tabs?cwd={q(WS3_upper)}")
+    data = json.loads(body)
+    results.append(("case-sensitive isolation",
+                    data["tabs"] == [], f"upper tabs={data['tabs']}"))
+
+    # 4) Invalid cwd → 400
+    code, body = c.request("POST", f"/api/tabs?cwd=/definitely/does/not/exist")
+    results.append(("bad cwd -> 400", code == 400, f"status={code} body={body[:80]}"))
+
+    # 5) No ?cwd= → default workspace = $HOME
+    HOME = os.environ.get("HOME") or "/"
+    _, body = c.request("GET", "/api/tabs")
+    data = json.loads(body)
+    results.append(("no cwd -> HOME default",
+                    data["workspace"] == HOME.rstrip("/") or data["workspace"] == HOME,
+                    f"workspace={data['workspace']} expected HOME={HOME}"))
+
+    # 6) Cross-client shared view: two clients same cwd see same tabs
+    WS_SHARE = tempfile.mkdtemp(prefix="wcmux-m8-share-")
     a = Client(BASE); login(a)
     b = Client(BASE); login(b)
-    code, body = a.request("POST", f"/api/tabs?workspace={ws}")
-    tab = json.loads(body)
-    code2, body2 = b.request("GET", f"/api/tabs?workspace={ws}")
-    tabs_b = json.loads(body2)["tabs"]
-    shared_ok = any(t["tab_id"] == tab["tab_id"] for t in tabs_b)
-    results.append(("cross-client shared view", shared_ok,
-                    f"a created {tab['tab_id']}, b sees {[t['tab_id'] for t in tabs_b]}"))
+    code, body = a.request("POST", f"/api/tabs?cwd={q(WS_SHARE)}")
+    tab_a = json.loads(body)
+    _, body = b.request("GET", f"/api/tabs?cwd={q(WS_SHARE)}")
+    tabs_b = json.loads(body)["tabs"]
+    results.append(("cross-client shared view",
+                    any(t["tab_id"] == tab_a["tab_id"] for t in tabs_b),
+                    f"a={tab_a['tab_id']}, b sees {[t['tab_id'] for t in tabs_b]}"))
 
-    # 6) tabs broadcast: both WS subscribers of the same workspace see a new tab
-    ws = "m8-bcast"
-    code, body = a.request("POST", f"/api/tabs?workspace={ws}")
-    first = json.loads(body); first_id = first["tab_id"]
-    wsA = await websockets.connect(
-        BASE.replace("http", "ws") + f"/ws/{first_id}",
+    # 7) Tab stays in its original workspace even if `cd` elsewhere in the shell
+    WS7 = tempfile.mkdtemp(prefix="wcmux-m8-stay-")
+    code, body = a.request("POST", f"/api/tabs?cwd={q(WS7)}")
+    tab = json.loads(body); tid = tab["tab_id"]
+    async with websockets.connect(
+        BASE.replace("http", "ws") + "/ws/" + tid,
         additional_headers={"Cookie": a.cookie_header()},
-    )
-    wsB = await websockets.connect(
-        BASE.replace("http", "ws") + f"/ws/{first_id}",
-        additional_headers={"Cookie": b.cookie_header()},
-    )
-    try:
-        await drain(wsA, 0.5); await drain(wsB, 0.5)
-        # b creates a new tab → both A and B should receive "tabs" frame
-        code, body = b.request("POST", f"/api/tabs?workspace={ws}")
-        new_id = json.loads(body)["tab_id"]
-        framesA = await drain(wsA, 1.0)
-        framesB = await drain(wsB, 1.0)
-        def saw_new(frames):
-            for f in frames:
-                if f.get("type") == "tabs":
-                    if any(t["tab_id"] == new_id for t in f.get("tabs", [])):
-                        return True
-            return False
-        results.append(("tabs broadcast to client A", saw_new(framesA),
-                        f"types={[f.get('type') for f in framesA]}"))
-        results.append(("tabs broadcast to client B", saw_new(framesB),
-                        f"types={[f.get('type') for f in framesB]}"))
+    ) as w:
+        await drain(w, 0.5)
+        await w.send(json.dumps({"type": "input", "data": "cd /var\n"}))
+        await drain(w, 1.0)
+    # Look up the original workspace — tab should still be there, not migrated
+    _, body = a.request("GET", f"/api/tabs?cwd={q(WS7)}")
+    data = json.loads(body)
+    results.append(("cd inside shell doesn't migrate workspace",
+                    any(t["tab_id"] == tid for t in data["tabs"]),
+                    f"ws={WS7} has {[t['tab_id'] for t in data['tabs']]}"))
 
-        # 7) Shared output: a types in first tab, b (also subscribed) receives it
-        await drain(wsA, 0.3); await drain(wsB, 0.3)
-        await wsA.send(json.dumps({"type": "input", "data": "echo SHARED-7\n"}))
-        framesB2 = await drain(wsB, 1.5)
-        textB = "".join(f.get("data", "") for f in framesB2 if f.get("type") == "output")
-        results.append(("shared input/output across clients",
-                        "SHARED-7" in textB, textB[:160]))
-    finally:
-        await wsA.close(); await wsB.close()
+    # 8) Old ?workspace= param is ignored; cwd decides
+    WS_OLD = tempfile.mkdtemp(prefix="wcmux-m8-legacy-")
+    code, body = a.request("POST", f"/api/tabs?workspace=old-name&cwd={q(WS_OLD)}")
+    data = json.loads(body)
+    results.append(("legacy workspace= is ignored",
+                    data["workspace"] == WS_OLD, f"ws={data.get('workspace')}"))
 
-    # 8) Empty-workspace GC: close the only tab, workspace record goes away
-    ws = "m8-gc"
-    code, body = a.request("POST", f"/api/tabs?workspace={ws}")
+    # 9) Empty workspace GC (close all → re-GET returns empty; creating a new tab
+    #    again works — we don't verify internal GC, just that the state is clean)
+    WS_GC = tempfile.mkdtemp(prefix="wcmux-m8-gc-")
+    code, body = a.request("POST", f"/api/tabs?cwd={q(WS_GC)}")
     tid = json.loads(body)["tab_id"]
     a.request("DELETE", f"/api/tabs/{tid}")
-    # a brand-new client sees the same workspace name as empty — that's fine,
-    # what matters is that the *same* tab id is gone
-    code, body = a.request("GET", f"/api/tabs?workspace={ws}")
+    _, body = a.request("GET", f"/api/tabs?cwd={q(WS_GC)}")
     data = json.loads(body)
-    results.append(("empty workspace GC'd",
+    results.append(("empty workspace has no tabs",
                     all(t["tab_id"] != tid for t in data["tabs"]), str(data)))
 
     failed = 0

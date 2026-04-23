@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import os
 import re
 import secrets
 import time
@@ -15,6 +16,28 @@ from .terminal import Terminal, spawn as spawn_terminal
 # OSC sequence: ESC ] N ; payload ST (ST = BEL or ESC \)
 _OSC_RE = re.compile(r"\x1b\](\d+);([^\x07\x1b]*?)(?:\x07|\x1b\\)")
 _OSC_BUF_MAX = 4096
+_MAX_CWD_LEN = 4096
+
+
+def default_cwd() -> str:
+    """Fallback workspace id when the URL has no ?cwd= parameter."""
+    h = os.environ.get("HOME") or os.path.expanduser("~") or "/"
+    return h.rstrip("/") or "/"
+
+
+def normalize_cwd(raw: Optional[str]) -> str:
+    """Canonical workspace id from a URL ?cwd= value (spec §4.10).
+    Absolute + abspath; trailing '/' stripped (except for '/'); no symlink resolve."""
+    if not raw:
+        return default_cwd()
+    s = os.path.abspath(raw)
+    if s != "/":
+        s = s.rstrip("/") or "/"
+    return s[:_MAX_CWD_LEN]
+
+
+def cwd_is_valid(normalized: str) -> bool:
+    return os.path.isdir(normalized) and os.access(normalized, os.R_OK)
 
 
 def _decode_osc7(payload: str) -> Optional[str]:
@@ -33,16 +56,6 @@ def _decode_osc7(payload: str) -> Optional[str]:
 MAX_TABS = 20
 BUFFER_BYTES = 256 * 1024
 CWD_POLL_SECONDS = 2.0
-
-DEFAULT_WORKSPACE = "default"
-_WORKSPACE_RE = re.compile(r"^[A-Za-z0-9_\-.]{1,64}$")
-
-
-def normalize_workspace(raw: Optional[str]) -> str:
-    """Normalize a URL-provided workspace id; fall back to DEFAULT if invalid."""
-    if not raw:
-        return DEFAULT_WORKSPACE
-    return raw if _WORKSPACE_RE.match(raw) else DEFAULT_WORKSPACE
 
 
 @dataclass
@@ -142,14 +155,14 @@ class SessionRegistry:
         return ws
 
     # ---- tab lifecycle ----
-    def create_tab(self, workspace_id: str, *, rows: int = 24, cols: int = 80,
-                   cwd: Optional[str] = None) -> TabState:
+    def create_tab(self, workspace_id: str, *, rows: int = 24, cols: int = 80) -> TabState:
+        """Workspace id is the canonical cwd; new tabs start in that directory."""
         ws = self.get_or_create_workspace(workspace_id)
         if len(ws.tabs) >= MAX_TABS:
             raise ValueError(f"tab limit reached ({MAX_TABS})")
         tab_id = secrets.token_urlsafe(9)
         name = ws.next_default_name()
-        term = spawn_terminal(self._shell, rows=rows, cols=cols, cwd=cwd)
+        term = spawn_terminal(self._shell, rows=rows, cols=cols, cwd=workspace_id)
         tab = TabState(tab_id=tab_id, name=name, terminal=term, workspace_id=workspace_id)
         tab.pump_task = asyncio.create_task(self._pump_output(tab))
         ws.tabs[tab_id] = tab

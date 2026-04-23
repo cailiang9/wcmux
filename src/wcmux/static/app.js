@@ -2,14 +2,10 @@
   const BASE = window.WCMUX_BASE_URL || "";
   const MAX_TABS = 20;
 
-  // Spec §4.10: read workspace id + starting cwd from the URL.
+  // Spec §4.10: URL ?cwd=<path> identifies the workspace AND sets the starting
+  // cwd for new tabs. No separate workspace id.
   const _urlParams = new URLSearchParams(location.search);
-  const WORKSPACE_RE = /^[A-Za-z0-9_\-.]{1,64}$/;
-  const WORKSPACE = (() => {
-    const w = _urlParams.get("workspace") || "";
-    return WORKSPACE_RE.test(w) ? w : "default";
-  })();
-  const START_CWD = _urlParams.get("cwd") || "";  // "" means use server default
+  const WORKSPACE_CWD = _urlParams.get("cwd") || "";  // "" → server HOME default
   const statusEl = document.getElementById("status");
   const tabsEl = document.getElementById("tabs");
   const termsEl = document.getElementById("terminals");
@@ -71,8 +67,9 @@
   }
 
   function withWorkspace(path) {
+    if (!WORKSPACE_CWD) return path;  // let server use default HOME
     const sep = path.includes("?") ? "&" : "?";
-    return path + sep + "workspace=" + encodeURIComponent(WORKSPACE);
+    return path + sep + "cwd=" + encodeURIComponent(WORKSPACE_CWD);
   }
 
   function api(method, path, body) {
@@ -299,9 +296,8 @@
   async function createTab() {
     if (tabs.size >= MAX_TABS) return;
     try {
-      const body = START_CWD ? { cwd: START_CWD } : undefined;
-      const meta = await api("POST", "/api/tabs", body);
-      // if a tab already exists in UI via the "tabs" broadcast, addTab will skip
+      // Starting cwd is implied by the workspace id (= ?cwd=), no body needed.
+      const meta = await api("POST", "/api/tabs");
       if (!tabs.has(meta.tab_id)) addTab(meta);
       activate(meta.tab_id);
     } catch (e) {

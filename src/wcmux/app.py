@@ -14,9 +14,9 @@ from starlette.middleware.sessions import SessionMiddleware
 from .auth import LockoutRegistry, build_auth_router, require_auth
 from .config import Config
 from .sessions import (
-    DEFAULT_WORKSPACE,
     SessionRegistry,
-    normalize_workspace,
+    cwd_is_valid,
+    normalize_cwd,
 )
 
 PKG_DIR = Path(__file__).parent
@@ -24,8 +24,16 @@ TEMPLATES_DIR = PKG_DIR / "templates"
 STATIC_DIR = PKG_DIR / "static"
 
 
-def _workspace_of(request: Request) -> str:
-    return normalize_workspace(request.query_params.get("workspace"))
+def _workspace_of(request: Request, *, require_valid: bool = True) -> str:
+    """Resolve workspace id from the URL's ?cwd= (spec §4.10).
+    On an explicitly-provided but invalid cwd we raise 400.
+    Missing ?cwd= falls back to the server's HOME — always considered valid
+    for look-up, so unauth'd clients listing an empty workspace still works."""
+    raw = request.query_params.get("cwd")
+    ws_id = normalize_cwd(raw)
+    if require_valid and raw and not cwd_is_valid(ws_id):
+        raise HTTPException(status_code=400, detail="invalid cwd")
+    return ws_id
 
 
 def create_app(config: Config) -> FastAPI:
@@ -73,7 +81,9 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/tabs")
     async def list_tabs(request: Request, _=Depends(require_auth)) -> JSONResponse:
-        ws_id = _workspace_of(request)
+        # Listing never creates a workspace — accept even unreadable paths
+        # (returns empty list) so clients can GET without side effects.
+        ws_id = _workspace_of(request, require_valid=False)
         return JSONResponse({
             "workspace": ws_id,
             "tabs": app.state.registry.list_tabs(ws_id),
@@ -81,18 +91,9 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/tabs")
     async def create_tab(request: Request, _=Depends(require_auth)) -> JSONResponse:
-        ws_id = _workspace_of(request)
-        cwd = request.query_params.get("cwd") or None
-        # Accept an optional JSON body with cwd as a fallback
-        if cwd is None:
-            try:
-                body = await request.json()
-                if isinstance(body, dict):
-                    cwd = body.get("cwd") or None
-            except Exception:
-                pass
+        ws_id = _workspace_of(request, require_valid=True)
         try:
-            tab = app.state.registry.create_tab(ws_id, cwd=cwd)
+            tab = app.state.registry.create_tab(ws_id)
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e))
         return JSONResponse({
