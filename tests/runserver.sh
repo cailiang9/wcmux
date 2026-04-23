@@ -12,9 +12,14 @@ if [[ ! -x "$VENV/bin/wcmux" ]]; then
   exit 2
 fi
 
-export WCMUX_PASSWORD="${WCMUX_PASSWORD:-pw}"
 PORT="${WCMUX_TEST_PORT:-8022}"
 LOG="${WCMUX_TEST_LOG:-/tmp/wcmux.log}"
+
+# Isolate the test server from any ambient WCMUX_* (e.g. from the running
+# systemd service) so we don't accidentally inherit a hash or host binding.
+unset WCMUX_PORT WCMUX_HOST WCMUX_BASE_URL WCMUX_PASSWORD_HASH \
+      WCMUX_SHELL WCMUX_SECRET_KEY WCMUX_TRUST_PROXY
+export WCMUX_PASSWORD="${WCMUX_PASSWORD:-pw}"
 
 unset http_proxy https_proxy
 
