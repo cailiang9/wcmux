@@ -21,16 +21,21 @@
   </div>
   <div id="terminals"></div>
   <div id="keypad">
-    <button class="kp mod" data-mod="ctrl"  title="Ctrl (sticky)">Ctrl</button>
-    <button class="kp mod" data-mod="alt"   title="Alt (sticky)">Alt</button>
-    <button class="kp"     data-key="esc"   title="Escape">Esc</button>
-    <button class="kp"     data-key="tab"   title="Tab">Tab</button>
-    <button class="kp"     data-key="left"  title="Left">←</button>
-    <button class="kp"     data-key="up"    title="Up">↑</button>
-    <button class="kp"     data-key="down"  title="Down">↓</button>
-    <button class="kp"     data-key="right" title="Right">→</button>
-    <button class="kp"     data-key="pgup"  title="Page Up">PgUp</button>
-    <button class="kp"     data-key="pgdn"  title="Page Down">PgDn</button>
+    <div class="kp-row">
+      <button class="kp mod" data-mod="ctrl"  title="Ctrl (sticky)">Ctrl</button>
+      <button class="kp mod" data-mod="alt"   title="Alt (sticky)">Alt</button>
+      <button class="kp"     data-key="esc"   title="Escape">Esc</button>
+      <button class="kp"     data-key="tab"   title="Tab">Tab</button>
+      <button class="kp"     data-key="home"  title="Home">Home</button>
+      <button class="kp"     data-key="pgup"  title="Page Up">PgUp</button>
+      <button class="kp"     data-key="pgdn"  title="Page Down">PgDn</button>
+    </div>
+    <div class="kp-row">
+      <button class="kp"     data-key="left"  title="Left">←</button>
+      <button class="kp"     data-key="up"    title="Up">↑</button>
+      <button class="kp"     data-key="down"  title="Down">↓</button>
+      <button class="kp"     data-key="right" title="Right">→</button>
+    </div>
   </div>
   <script>
     window.WCMUX_BASE_URL = {{ base_url|tojson }};

@@ -264,6 +264,7 @@
       case "left":  return csi("D");
       case "pgup":  return tilde(5);
       case "pgdn":  return tilde(6);
+      case "home":  return csi("H");
       default: return "";
     }
   }
@@ -298,11 +299,33 @@
     btn.addEventListener("mousedown", (e) => e.preventDefault());
   });
 
-  window.addEventListener("resize", () => {
+  function refitActive() {
     for (const t of tabs.values()) {
       if (t.id === activeId) { try { t.fit.fit(); sendResize(t); } catch {} }
     }
-  });
+  }
+  window.addEventListener("resize", refitActive);
+
+  // Float the keypad above the on-screen keyboard on mobile (visualViewport API)
+  const vv = window.visualViewport;
+  if (vv) {
+    const root = document.documentElement;
+    let rafId = 0;
+    const apply = () => {
+      rafId = 0;
+      // Distance from visualViewport bottom to layout viewport bottom.
+      const gap = Math.max(0, window.innerHeight - (vv.height + vv.offsetTop));
+      root.style.setProperty("--kb", gap + "px");
+      refitActive();
+    };
+    const schedule = () => {
+      if (rafId) return;
+      rafId = requestAnimationFrame(apply);
+    };
+    vv.addEventListener("resize", schedule);
+    vv.addEventListener("scroll", schedule);
+    apply();
+  }
 
   async function bootstrap() {
     try {
