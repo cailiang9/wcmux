@@ -1,6 +1,15 @@
 (function () {
   const BASE = window.WCMUX_BASE_URL || "";
   const MAX_TABS = 20;
+
+  // Spec §4.10: read workspace id + starting cwd from the URL.
+  const _urlParams = new URLSearchParams(location.search);
+  const WORKSPACE_RE = /^[A-Za-z0-9_\-.]{1,64}$/;
+  const WORKSPACE = (() => {
+    const w = _urlParams.get("workspace") || "";
+    return WORKSPACE_RE.test(w) ? w : "default";
+  })();
+  const START_CWD = _urlParams.get("cwd") || "";  // "" means use server default
   const statusEl = document.getElementById("status");
   const tabsEl = document.getElementById("tabs");
   const termsEl = document.getElementById("terminals");
@@ -61,13 +70,18 @@
     else { statusEl.className = "status err"; statusEl.title = "disconnected"; }
   }
 
+  function withWorkspace(path) {
+    const sep = path.includes("?") ? "&" : "?";
+    return path + sep + "workspace=" + encodeURIComponent(WORKSPACE);
+  }
+
   function api(method, path, body) {
     const opts = { method, headers: {}, credentials: "same-origin" };
     if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
-    return fetch(BASE + path, opts).then(async (r) => {
+    return fetch(BASE + withWorkspace(path), opts).then(async (r) => {
       if (!r.ok) throw new Error(`${method} ${path}: ${r.status}`);
       return r.json();
     });
@@ -197,6 +211,9 @@
         t.cwdDisplay = msg.display || "";
         t.cwdFull = msg.full || "";
         renderTab(t);
+      } else if (msg.type === "tabs") {
+        // spec §4.11: tab list broadcast from the server — reconcile local state
+        reconcileTabs(msg.tabs || []);
       } else if (msg.type === "exit") {
         // Shell exited (Ctrl-D / exit / kill) — auto-close the tab (spec §4.8)
         closeTab(t.id);
@@ -224,6 +241,26 @@
     if (t.ws && t.ws.readyState === WebSocket.OPEN) {
       t.ws.send(JSON.stringify({ type: "resize", rows: t.term.rows, cols: t.term.cols }));
     }
+  }
+
+  function reconcileTabs(list) {
+    const wantIds = new Set(list.map((m) => m.tab_id));
+    // drop tabs that vanished remotely
+    for (const id of Array.from(tabs.keys())) {
+      if (!wantIds.has(id)) cleanupLocalTab(id);
+    }
+    // add tabs that appeared remotely
+    for (const meta of list) {
+      if (!tabs.has(meta.tab_id)) addTab(meta);
+      else {
+        const t = tabs.get(meta.tab_id);
+        t.name = meta.name || t.name;
+        t.cwdDisplay = meta.cwd_display || t.cwdDisplay;
+        t.cwdFull = meta.cwd_full || t.cwdFull;
+        renderTab(t);
+      }
+    }
+    updateNewTabButton();
   }
 
   function addTab(meta) {
@@ -262,8 +299,10 @@
   async function createTab() {
     if (tabs.size >= MAX_TABS) return;
     try {
-      const meta = await api("POST", "/api/tabs");
-      addTab(meta);
+      const body = START_CWD ? { cwd: START_CWD } : undefined;
+      const meta = await api("POST", "/api/tabs", body);
+      // if a tab already exists in UI via the "tabs" broadcast, addTab will skip
+      if (!tabs.has(meta.tab_id)) addTab(meta);
       activate(meta.tab_id);
     } catch (e) {
       updateIndicator();
@@ -318,6 +357,16 @@
   }, true);
 
   newTabBtn.addEventListener("click", createTab);
+
+  // Spec §4.7: "?" button opens the shortcut reference
+  const helpBtn = document.getElementById("help-btn");
+  const helpDlg = document.getElementById("help-dialog");
+  if (helpBtn && helpDlg) {
+    helpBtn.addEventListener("click", () => {
+      if (typeof helpDlg.showModal === "function") helpDlg.showModal();
+      else helpDlg.setAttribute("open", "");
+    });
+  }
 
   // --- bottom keypad: Ctrl/Alt sticky modifiers + Esc/Tab/arrows/PgUp/PgDn ---
   // stickyMods + clearStickyMods are declared near the top of the file.

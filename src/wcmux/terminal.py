@@ -16,9 +16,9 @@ class Terminal(Protocol):
     def alive(self) -> bool: ...
 
 
-def spawn(shell: str, rows: int = 24, cols: int = 80) -> "Terminal":
+def spawn(shell: str, rows: int = 24, cols: int = 80, cwd: "str | None" = None) -> "Terminal":
     if sys.platform.startswith("win"):
         from .terminal_windows import WindowsTerminal  # noqa: F401
-        return WindowsTerminal(shell, rows=rows, cols=cols)  # type: ignore[arg-type]
+        return WindowsTerminal(shell, rows=rows, cols=cols, cwd=cwd)  # type: ignore[arg-type]
     from .terminal_unix import UnixTerminal
-    return UnixTerminal(shell, rows=rows, cols=cols)
+    return UnixTerminal(shell, rows=rows, cols=cols, cwd=cwd)

@@ -103,15 +103,20 @@ async def main() -> int:
     client = Client(BASE)
     login(client)
 
-    # 1) list initially empty
-    code, _, body = client.request("GET", "/api/tabs")
+    # Use isolated workspaces — spec §4.10 / §4.11 changed semantics so state
+    # now persists across logouts. Fresh workspace gives clean state.
+    WS = "m3a"
+    WS_Q = f"?workspace={WS}"
+
+    # 1) list initially empty for a fresh workspace
+    code, _, body = client.request("GET", f"/api/tabs{WS_Q}")
     data = json.loads(body)
     results.append(("initial tabs empty", code == 200 and data["tabs"] == [], str(data)))
 
     # 2) create two tabs
-    code, _, body = client.request("POST", "/api/tabs")
+    code, _, body = client.request("POST", f"/api/tabs{WS_Q}")
     t1 = json.loads(body)
-    code2, _, body2 = client.request("POST", "/api/tabs")
+    code2, _, body2 = client.request("POST", f"/api/tabs{WS_Q}")
     t2 = json.loads(body2)
     results.append(("create 2 tabs", code == 200 and code2 == 200 and t1["tab_id"] != t2["tab_id"],
                     f"t1={t1} t2={t2}"))
@@ -120,7 +125,7 @@ async def main() -> int:
                     f"{t1['name']!r}/{t2['name']!r}"))
 
     # 3) GET /api/tabs shows 2 in order
-    code, _, body = client.request("GET", "/api/tabs")
+    code, _, body = client.request("GET", f"/api/tabs{WS_Q}")
     data = json.loads(body)
     ids = [t["tab_id"] for t in data["tabs"]]
     results.append(("list has 2 tabs", code == 200 and ids == [t1["tab_id"], t2["tab_id"]], str(ids)))
@@ -155,7 +160,7 @@ async def main() -> int:
     # 5) rename tab 1
     code, _, _ = client.request("PATCH", f"/api/tabs/{t1['tab_id']}", json_body={"name": "hello"})
     results.append(("rename 200", code == 200, f"got {code}"))
-    _, _, body = client.request("GET", "/api/tabs")
+    _, _, body = client.request("GET", f"/api/tabs{WS_Q}")
     data = json.loads(body)
     name_after = next((t["name"] for t in data["tabs"] if t["tab_id"] == t1["tab_id"]), None)
     results.append(("rename took effect", name_after == "hello", f"name={name_after!r}"))
@@ -163,7 +168,7 @@ async def main() -> int:
     # 6) close tab 2
     code, _, _ = client.request("DELETE", f"/api/tabs/{t2['tab_id']}")
     results.append(("delete 200", code == 200, f"got {code}"))
-    _, _, body = client.request("GET", "/api/tabs")
+    _, _, body = client.request("GET", f"/api/tabs{WS_Q}")
     data = json.loads(body)
     ids_after = [t["tab_id"] for t in data["tabs"]]
     results.append(("after delete only t1", ids_after == [t1["tab_id"]], str(ids_after)))
@@ -172,38 +177,40 @@ async def main() -> int:
     code, _, _ = client.request("DELETE", f"/api/tabs/no-such-id")
     results.append(("delete non-existent -> 404", code == 404, f"got {code}"))
 
-    # 8) logout -> tabs cleared, PID killed
+    # 8) spec §4.11: logout only clears the cookie; workspace terminals persist
     code, _, _ = client.request("POST", "/logout")
     results.append(("logout 303", code in (302, 303), f"got {code}"))
-    # The session cookie is wiped by the server; check a new client now fails
     c2 = Client(BASE); login(c2)
-    _, _, body = c2.request("GET", "/api/tabs")
+    _, _, body = c2.request("GET", f"/api/tabs{WS_Q}")
     data = json.loads(body)
-    results.append(("fresh login has no tabs", data["tabs"] == [], str(data)))
+    still_there = [t["tab_id"] for t in data["tabs"]] == [t1["tab_id"]]
+    results.append(("tab persists across logout", still_there, str(data)))
 
-    # Verify pid1 no longer exists
+    # Verify pid1 survived logout (new model)
     if pid1:
         try:
             os.kill(pid1, 0)
-            # still alive
-            results.append((f"pid1 killed on logout", False, f"pid {pid1} still alive"))
+            results.append(("pid1 survives logout", True, ""))
         except OSError:
-            results.append((f"pid1 killed on logout", True, ""))
+            results.append(("pid1 survives logout", False, f"pid {pid1} gone"))
     else:
-        results.append(("pid1 killed on logout", False, "could not parse pid"))
+        results.append(("pid1 survives logout", False, "could not parse pid"))
 
-    # 9) cap at MAX_TABS (20) — create 20, 21st should be 409
+    # Explicit cleanup of the lingering tab (since logout no longer kills)
+    c2.request("DELETE", f"/api/tabs/{t1['tab_id']}")
+
+    # 9) cap at MAX_TABS (20) — fresh workspace `m3b` so count starts at 0
+    WS_CAP = "m3b"
+    WS_CAP_Q = f"?workspace={WS_CAP}"
     c3 = Client(BASE); login(c3)
     last_code = None
     for i in range(20):
-        code, _, _ = c3.request("POST", "/api/tabs")
+        code, _, _ = c3.request("POST", f"/api/tabs{WS_CAP_Q}")
         last_code = code
         if code != 200: break
     results.append(("create 20 all 200", last_code == 200, f"last={last_code}"))
-    code, _, _ = c3.request("POST", "/api/tabs")
+    code, _, _ = c3.request("POST", f"/api/tabs{WS_CAP_Q}")
     results.append(("21st -> 409", code == 409, f"got {code}"))
-    # clean up: logout
-    c3.request("POST", "/logout")
 
     failed = 0
     for name, ok, hint in results:

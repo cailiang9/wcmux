@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hmac
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -8,6 +7,8 @@ from typing import Optional
 from fastapi import APIRouter, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+
+from .passhash import verify as verify_hash
 
 MAX_FAILS = 5
 LOCK_SECONDS = 15 * 60
@@ -101,7 +102,7 @@ def build_auth_router(templates: Jinja2Templates) -> APIRouter:
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             )
 
-        if not hmac.compare_digest(password, config.password):
+        if not verify_hash(config.password_hash, password):
             lockout.record_failure(ip)
             return templates.TemplateResponse(
                 request,
@@ -122,9 +123,10 @@ def build_auth_router(templates: Jinja2Templates) -> APIRouter:
 
     @router.post("/logout")
     async def logout(request: Request):
-        # Caller (later) should terminate tabs before we clear the session.
-        sid = request.session.get("sid")
+        # Spec §4.11: logout only clears the browser cookie;
+        # workspace terminals persist. The optional on_logout hook is legacy.
         on_logout = getattr(request.app.state, "on_logout", None)
+        sid = request.session.get("sid")
         if on_logout and sid:
             try:
                 on_logout(sid)

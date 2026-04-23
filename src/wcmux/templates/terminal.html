@@ -15,10 +15,24 @@
     <div id="tabs"></div>
     <button id="new-tab" title="New tab (Ctrl+Alt+T)">+</button>
     <span id="status" class="status" title="connecting"></span>
+    <button id="help-btn" class="logout" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">?</button>
     <form method="POST" action="{{ base_url }}/logout" style="margin-left:auto">
       <button type="submit" class="logout">logout</button>
     </form>
   </div>
+  <dialog id="help-dialog">
+    <h3>Keyboard shortcuts</h3>
+    <table>
+      <tr><th colspan="2">Tabs</th></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>T</kbd></td><td>New tab</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>W</kbd></td><td>Close current tab</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>←</kbd> / <kbd>→</kbd></td><td>Prev / next tab (cyclic)</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>1</kbd>…<kbd>9</kbd></td><td>Jump to tab by index</td></tr>
+      <tr><th colspan="2">Virtual keypad modifiers</th></tr>
+      <tr><td>Tap <kbd>Ctrl</kbd> / <kbd>Alt</kbd></td><td>Next character combines with it (e.g. tap Ctrl then type <kbd>d</kbd> → Ctrl-D)</td></tr>
+    </table>
+    <form method="dialog"><button>Close</button></form>
+  </dialog>
   <div id="terminals"></div>
   <div id="keypad">
     <div class="kp-row">

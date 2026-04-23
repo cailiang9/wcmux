@@ -24,7 +24,8 @@ def default_shell() -> str:
 
 @dataclass
 class Config:
-    password: str
+    # password_hash is the only stored credential (spec §3.4)
+    password_hash: str
     port: int = 8022
     host: str = "0.0.0.0"
     base_url: str = ""
@@ -37,8 +38,8 @@ class Config:
         self.base_url = normalize_base_url(self.base_url)
         if not (1 <= self.port <= 65535):
             raise ValueError(f"port must be in 1..65535, got {self.port}")
-        if not self.password:
-            raise ValueError("password is required")
+        if not self.password_hash:
+            raise ValueError("password_hash is required")
         if not self.shell:
             self.shell = default_shell()
         if not self.secret_key:

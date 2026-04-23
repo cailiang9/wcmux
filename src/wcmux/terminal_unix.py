@@ -17,11 +17,16 @@ READ_CHUNK = 8192
 class UnixTerminal:
     """PTY-backed shell wrapper using ptyprocess + asyncio add_reader."""
 
-    def __init__(self, shell: str, rows: int = 24, cols: int = 80) -> None:
+    def __init__(self, shell: str, rows: int = 24, cols: int = 80,
+                 cwd: Optional[str] = None) -> None:
+        spawn_cwd: Optional[str] = None
+        if cwd and os.path.isabs(cwd) and os.path.isdir(cwd):
+            spawn_cwd = cwd
         self._proc = ptyprocess.PtyProcess.spawn(
             [shell],
             dimensions=(rows, cols),
             env={**os.environ, "TERM": "xterm-256color"},
+            cwd=spawn_cwd,
         )
         self.pid: int = self._proc.pid
         self._fd: int = self._proc.fd

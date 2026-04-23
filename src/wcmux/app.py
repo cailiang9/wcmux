@@ -13,11 +13,19 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .auth import LockoutRegistry, build_auth_router, require_auth
 from .config import Config
-from .sessions import SessionRegistry
+from .sessions import (
+    DEFAULT_WORKSPACE,
+    SessionRegistry,
+    normalize_workspace,
+)
 
 PKG_DIR = Path(__file__).parent
 TEMPLATES_DIR = PKG_DIR / "templates"
 STATIC_DIR = PKG_DIR / "static"
+
+
+def _workspace_of(request: Request) -> str:
+    return normalize_workspace(request.query_params.get("workspace"))
 
 
 def create_app(config: Config) -> FastAPI:
@@ -41,11 +49,9 @@ def create_app(config: Config) -> FastAPI:
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-    # logout hook: terminate tabs in-process
-    def _on_logout(sid: str) -> None:
-        app.state.registry.terminate_session(sid)
-
-    app.state.on_logout = _on_logout
+    # Spec §4.11 revision: logout only clears the browser session cookie.
+    # It no longer terminates workspace terminals.
+    app.state.on_logout = None
 
     app.include_router(build_auth_router(templates))
 
@@ -63,30 +69,34 @@ def create_app(config: Config) -> FastAPI:
             request, "terminal.html", {"base_url": config.base_url}
         )
 
-    # ---------- REST: tabs ----------
-
-    def _sid(request: Request) -> str:
-        sid = request.session.get("sid")
-        if not sid:
-            # should have been set on login, but tolerate
-            import secrets
-            sid = secrets.token_urlsafe(16)
-            request.session["sid"] = sid
-        return sid
+    # ---------- REST: tabs (scoped to workspace) ----------
 
     @app.get("/api/tabs")
     async def list_tabs(request: Request, _=Depends(require_auth)) -> JSONResponse:
-        sid = _sid(request)
-        return JSONResponse({"tabs": app.state.registry.list_tabs(sid)})
+        ws_id = _workspace_of(request)
+        return JSONResponse({
+            "workspace": ws_id,
+            "tabs": app.state.registry.list_tabs(ws_id),
+        })
 
     @app.post("/api/tabs")
     async def create_tab(request: Request, _=Depends(require_auth)) -> JSONResponse:
-        sid = _sid(request)
+        ws_id = _workspace_of(request)
+        cwd = request.query_params.get("cwd") or None
+        # Accept an optional JSON body with cwd as a fallback
+        if cwd is None:
+            try:
+                body = await request.json()
+                if isinstance(body, dict):
+                    cwd = body.get("cwd") or None
+            except Exception:
+                pass
         try:
-            tab = app.state.registry.create_tab(sid)
+            tab = app.state.registry.create_tab(ws_id, cwd=cwd)
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e))
         return JSONResponse({
+            "workspace": ws_id,
             "tab_id": tab.tab_id,
             "name": tab.name,
             "cwd_full": tab.cwd_full,
@@ -96,21 +106,19 @@ def create_app(config: Config) -> FastAPI:
 
     @app.delete("/api/tabs/{tab_id}")
     async def delete_tab(tab_id: str, request: Request, _=Depends(require_auth)) -> JSONResponse:
-        sid = _sid(request)
-        ok = app.state.registry.close_tab(sid, tab_id)
+        ok = app.state.registry.close_tab(tab_id)
         if not ok:
             raise HTTPException(status_code=404, detail="tab not found")
         return JSONResponse({"ok": True})
 
     @app.patch("/api/tabs/{tab_id}")
     async def patch_tab(tab_id: str, request: Request, _=Depends(require_auth)) -> JSONResponse:
-        sid = _sid(request)
         try:
             body = await request.json()
         except Exception:
             raise HTTPException(status_code=400, detail="invalid json")
         name = (body or {}).get("name", "")
-        ok = app.state.registry.rename_tab(sid, tab_id, name)
+        ok = app.state.registry.rename_tab(tab_id, name)
         if not ok:
             raise HTTPException(status_code=400, detail="cannot rename")
         return JSONResponse({"ok": True})
@@ -122,12 +130,8 @@ def create_app(config: Config) -> FastAPI:
         if not ws.session.get("authed"):
             await ws.close(code=4401)
             return
-        sid = ws.session.get("sid")
-        if not sid:
-            await ws.close(code=4401)
-            return
         registry: SessionRegistry = ws.app.state.registry
-        tab = registry.get_tab(sid, tab_id)
+        tab = registry.find_tab(tab_id)
         if not tab:
             await ws.close(code=4404)
             return
@@ -159,6 +163,8 @@ def create_app(config: Config) -> FastAPI:
                             "display": payload.get("display", ""),
                             "full": payload.get("full", ""),
                         }))
+                    elif kind == "tabs":
+                        await ws.send_text(json.dumps({"type": "tabs", "tabs": payload}))
             except Exception:
                 pass
 
@@ -174,7 +180,9 @@ def create_app(config: Config) -> FastAPI:
                 if t == "input":
                     tab.terminal.write(msg.get("data", ""))
                 elif t == "resize":
-                    tab.terminal.resize(int(msg.get("rows", 24)), int(msg.get("cols", 80)))
+                    rows = int(msg.get("rows", 24))
+                    cols = int(msg.get("cols", 80))
+                    registry.update_viewport(tab, q, rows, cols)
         except Exception:
             pass
         finally:
@@ -183,6 +191,6 @@ def create_app(config: Config) -> FastAPI:
             except ValueError:
                 pass
             pump_task.cancel()
-            registry.on_ws_disconnect(sid, tab)
+            registry.on_ws_disconnect(tab, q)
 
     return app

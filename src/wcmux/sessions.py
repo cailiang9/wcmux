@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import re
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -12,8 +13,17 @@ from .terminal import Terminal, spawn as spawn_terminal
 
 MAX_TABS = 20
 BUFFER_BYTES = 256 * 1024
-RETENTION_SECONDS = 5 * 60
 CWD_POLL_SECONDS = 2.0
+
+DEFAULT_WORKSPACE = "default"
+_WORKSPACE_RE = re.compile(r"^[A-Za-z0-9_\-.]{1,64}$")
+
+
+def normalize_workspace(raw: Optional[str]) -> str:
+    """Normalize a URL-provided workspace id; fall back to DEFAULT if invalid."""
+    if not raw:
+        return DEFAULT_WORKSPACE
+    return raw if _WORKSPACE_RE.match(raw) else DEFAULT_WORKSPACE
 
 
 @dataclass
@@ -21,15 +31,16 @@ class TabState:
     tab_id: str
     name: str
     terminal: Terminal
+    workspace_id: str
     buffer: collections.deque = field(default_factory=collections.deque)
     buffer_size: int = 0
     cwd_full: str = ""
     cwd_display: str = ""
-    active_ws: int = 0
-    pending_close_task: Optional[asyncio.Task] = None
     created_at: float = field(default_factory=time.time)
     pump_task: Optional[asyncio.Task] = None
     subscribers: list[asyncio.Queue] = field(default_factory=list)
+    # spec §4.11: resize merges across subscribers by taking element-wise min
+    viewports: dict[int, tuple[int, int]] = field(default_factory=dict)
 
     def append_output(self, chunk: str) -> None:
         self.buffer.append(chunk)
@@ -43,8 +54,9 @@ class TabState:
 
 
 @dataclass
-class UserSession:
-    sid: str
+class Workspace:
+    """A named group of shared terminals (spec §4.10 / §4.11)."""
+    workspace_id: str
     tabs: "collections.OrderedDict[str, TabState]" = field(
         default_factory=collections.OrderedDict
     )
@@ -57,9 +69,11 @@ class UserSession:
 
 class SessionRegistry:
     def __init__(self, shell: str) -> None:
-        self._sessions: dict[str, UserSession] = {}
+        self._workspaces: dict[str, Workspace] = {}
         self._shell = shell
         self._cwd_poll_task: Optional[asyncio.Task] = None
+        # Fast path: tab_id → (workspace_id) for global tab lookup
+        self._tab_to_ws: dict[str, str] = {}
 
     def start_background_tasks(self) -> None:
         if self._cwd_poll_task is None or self._cwd_poll_task.done():
@@ -69,8 +83,8 @@ class SessionRegistry:
         try:
             while True:
                 await asyncio.sleep(CWD_POLL_SECONDS)
-                for us in list(self._sessions.values()):
-                    for tab in list(us.tabs.values()):
+                for ws in list(self._workspaces.values()):
+                    for tab in list(ws.tabs.values()):
                         try:
                             pid = tab.terminal.pid
                         except Exception:
@@ -93,31 +107,34 @@ class SessionRegistry:
         except Exception:
             return
 
-    # ---- user session lookup ----
-    def get_or_create(self, sid: str) -> UserSession:
-        us = self._sessions.get(sid)
-        if us is None:
-            us = UserSession(sid=sid)
-            self._sessions[sid] = us
-        return us
+    # ---- workspace access ----
+    def get_workspace(self, ws_id: str) -> Optional[Workspace]:
+        return self._workspaces.get(ws_id)
 
-    def get(self, sid: str) -> Optional[UserSession]:
-        return self._sessions.get(sid)
+    def get_or_create_workspace(self, ws_id: str) -> Workspace:
+        ws = self._workspaces.get(ws_id)
+        if ws is None:
+            ws = Workspace(workspace_id=ws_id)
+            self._workspaces[ws_id] = ws
+        return ws
 
     # ---- tab lifecycle ----
-    def create_tab(self, sid: str, rows: int = 24, cols: int = 80) -> TabState:
-        us = self.get_or_create(sid)
-        if len(us.tabs) >= MAX_TABS:
+    def create_tab(self, workspace_id: str, *, rows: int = 24, cols: int = 80,
+                   cwd: Optional[str] = None) -> TabState:
+        ws = self.get_or_create_workspace(workspace_id)
+        if len(ws.tabs) >= MAX_TABS:
             raise ValueError(f"tab limit reached ({MAX_TABS})")
         tab_id = secrets.token_urlsafe(9)
-        name = us.next_default_name()
-        term = spawn_terminal(self._shell, rows=rows, cols=cols)
-        tab = TabState(tab_id=tab_id, name=name, terminal=term)
-        tab.pump_task = asyncio.create_task(self._pump_output(sid, tab))
-        us.tabs[tab_id] = tab
+        name = ws.next_default_name()
+        term = spawn_terminal(self._shell, rows=rows, cols=cols, cwd=cwd)
+        tab = TabState(tab_id=tab_id, name=name, terminal=term, workspace_id=workspace_id)
+        tab.pump_task = asyncio.create_task(self._pump_output(tab))
+        ws.tabs[tab_id] = tab
+        self._tab_to_ws[tab_id] = workspace_id
+        self._broadcast_tabs_changed(ws)
         return tab
 
-    async def _pump_output(self, sid: str, tab: TabState) -> None:
+    async def _pump_output(self, tab: TabState) -> None:
         try:
             while True:
                 chunk = await tab.terminal.read()
@@ -133,113 +150,132 @@ class SessionRegistry:
                     q.put_nowait(("exit", 0))
                 except asyncio.QueueFull:
                     pass
-            # Shell exited (Ctrl-D / exit / kill) — drop the tab from the session
-            # so future reconnects don't revive a dead shell.
-            us = self._sessions.get(sid)
-            if us:
-                us.tabs.pop(tab.tab_id, None)
-            try:
-                tab.terminal.close()
-            except Exception:
-                pass
+            self._remove_tab(tab, teardown_terminal=True)
         except asyncio.CancelledError:
             raise
         except Exception:
             pass
 
-    def close_tab(self, sid: str, tab_id: str) -> bool:
-        us = self._sessions.get(sid)
-        if not us:
-            return False
-        tab = us.tabs.pop(tab_id, None)
+    def _remove_tab(self, tab: TabState, *, teardown_terminal: bool) -> None:
+        ws = self._workspaces.get(tab.workspace_id)
+        if ws is not None:
+            ws.tabs.pop(tab.tab_id, None)
+        self._tab_to_ws.pop(tab.tab_id, None)
+        if teardown_terminal:
+            try:
+                tab.terminal.close()
+            except Exception:
+                pass
+        if ws is not None:
+            if not ws.tabs:
+                # Empty workspace — drop the record so a later visit starts fresh
+                self._workspaces.pop(ws.workspace_id, None)
+            else:
+                self._broadcast_tabs_changed(ws)
+
+    def close_tab(self, tab_id: str) -> bool:
+        tab = self.find_tab(tab_id)
         if not tab:
             return False
-        self._teardown_tab(tab)
-        return True
-
-    def _teardown_tab(self, tab: TabState) -> None:
-        try:
-            tab.terminal.close()
-        except Exception:
-            pass
-        if tab.pump_task:
-            tab.pump_task.cancel()
-        if tab.pending_close_task:
-            tab.pending_close_task.cancel()
-        # notify subscribers
-        for q in tab.subscribers:
+        # notify subscribers first so they send an "exit" before WS closes
+        for q in list(tab.subscribers):
             try:
                 q.put_nowait(("exit", 0))
             except Exception:
                 pass
-        tab.subscribers.clear()
+        if tab.pump_task:
+            tab.pump_task.cancel()
+        self._remove_tab(tab, teardown_terminal=True)
+        return True
 
-    def rename_tab(self, sid: str, tab_id: str, name: str) -> bool:
-        us = self._sessions.get(sid)
-        if not us:
-            return False
-        tab = us.tabs.get(tab_id)
+    def rename_tab(self, tab_id: str, name: str) -> bool:
+        tab = self.find_tab(tab_id)
         if not tab:
             return False
         name = name.strip()[:80]
         if not name:
             return False
         tab.name = name
+        ws = self._workspaces.get(tab.workspace_id)
+        if ws:
+            self._broadcast_tabs_changed(ws)
         return True
 
-    def list_tabs(self, sid: str) -> list[dict]:
-        us = self._sessions.get(sid)
-        if not us:
+    def list_tabs(self, workspace_id: str) -> list[dict]:
+        ws = self._workspaces.get(workspace_id)
+        if not ws:
             return []
-        return [
-            {
-                "tab_id": t.tab_id,
-                "name": t.name,
-                "cwd_full": t.cwd_full,
-                "cwd_display": t.cwd_display,
-                "alive": t.terminal.alive,
-            }
-            for t in us.tabs.values()
-        ]
+        return [self._tab_summary(t) for t in ws.tabs.values()]
 
-    def get_tab(self, sid: str, tab_id: str) -> Optional[TabState]:
-        us = self._sessions.get(sid)
-        if not us:
+    def _tab_summary(self, t: TabState) -> dict:
+        return {
+            "tab_id": t.tab_id,
+            "name": t.name,
+            "cwd_full": t.cwd_full,
+            "cwd_display": t.cwd_display,
+            "alive": t.terminal.alive,
+        }
+
+    def find_tab(self, tab_id: str) -> Optional[TabState]:
+        ws_id = self._tab_to_ws.get(tab_id)
+        if not ws_id:
             return None
-        return us.tabs.get(tab_id)
+        ws = self._workspaces.get(ws_id)
+        return ws.tabs.get(tab_id) if ws else None
 
-    # ---- retention ----
+    # ---- subscription (per-WS viewport tracking) ----
     def on_ws_connect(self, tab: TabState) -> None:
-        tab.active_ws += 1
-        if tab.pending_close_task:
-            tab.pending_close_task.cancel()
-            tab.pending_close_task = None
+        # Nothing to do yet; viewport will be registered when the client sends resize.
+        pass
 
-    def on_ws_disconnect(self, sid: str, tab: TabState) -> None:
-        tab.active_ws -= 1
-        if tab.active_ws <= 0 and tab.terminal.alive:
-            tab.pending_close_task = asyncio.create_task(
-                self._delayed_cleanup(sid, tab)
-            )
+    def on_ws_disconnect(self, tab: TabState, q: asyncio.Queue) -> None:
+        tab.viewports.pop(id(q), None)
+        self._apply_min_viewport(tab)
+        # spec §4.11: closing the browser does NOT terminate the terminal.
+        # Only explicit close_tab / shell EOF remove the tab from the registry.
 
-    async def _delayed_cleanup(self, sid: str, tab: TabState) -> None:
+    def update_viewport(self, tab: TabState, q: asyncio.Queue, rows: int, cols: int) -> None:
+        if rows <= 0 or cols <= 0:
+            return
+        tab.viewports[id(q)] = (rows, cols)
+        self._apply_min_viewport(tab)
+
+    def _apply_min_viewport(self, tab: TabState) -> None:
+        if not tab.viewports:
+            return
+        rows = min(v[0] for v in tab.viewports.values())
+        cols = min(v[1] for v in tab.viewports.values())
         try:
-            await asyncio.sleep(RETENTION_SECONDS)
-        except asyncio.CancelledError:
-            return
-        us = self._sessions.get(sid)
-        if not us:
-            return
-        # only close if still no active ws
-        if tab.active_ws <= 0 and tab.tab_id in us.tabs:
-            us.tabs.pop(tab.tab_id, None)
-            self._teardown_tab(tab)
+            tab.terminal.resize(rows, cols)
+        except Exception:
+            pass
 
-    # ---- logout ----
-    def terminate_session(self, sid: str) -> None:
-        us = self._sessions.pop(sid, None)
-        if not us:
+    # ---- broadcast tab-list changes to all subscribers in workspace ----
+    def _broadcast_tabs_changed(self, ws: Workspace) -> None:
+        payload = [self._tab_summary(t) for t in ws.tabs.values()]
+        for tab in ws.tabs.values():
+            for q in list(tab.subscribers):
+                try:
+                    q.put_nowait(("tabs", payload))
+                except asyncio.QueueFull:
+                    pass
+
+    # ---- Hard-reset a workspace (for tests / admin) ----
+    def terminate_workspace(self, workspace_id: str) -> None:
+        ws = self._workspaces.pop(workspace_id, None)
+        if not ws:
             return
-        for tab in list(us.tabs.values()):
-            self._teardown_tab(tab)
-        us.tabs.clear()
+        for tab in list(ws.tabs.values()):
+            self._tab_to_ws.pop(tab.tab_id, None)
+            if tab.pump_task:
+                tab.pump_task.cancel()
+            try:
+                tab.terminal.close()
+            except Exception:
+                pass
+            for q in tab.subscribers:
+                try:
+                    q.put_nowait(("exit", 0))
+                except Exception:
+                    pass
+        ws.tabs.clear()
