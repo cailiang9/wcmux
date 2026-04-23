@@ -6,6 +6,9 @@
   // cwd for new tabs. No separate workspace id.
   const _urlParams = new URLSearchParams(location.search);
   const WORKSPACE_CWD = _urlParams.get("cwd") || "";  // "" → server HOME default
+  // Set to true once we've learned the URL's cwd is no longer valid server-side;
+  // subsequent requests omit the cwd param and land in the server default workspace.
+  let _fallback_active = false;
   const statusEl = document.getElementById("status");
   const tabsEl = document.getElementById("tabs");
   const termsEl = document.getElementById("terminals");
@@ -50,6 +53,17 @@
     return out + rest;
   }
 
+  let _menuRefreshScheduled = false;
+  function scheduleMenuRefresh() {
+    if (_menuRefreshScheduled) return;
+    _menuRefreshScheduled = true;
+    queueMicrotask(() => {
+      _menuRefreshScheduled = false;
+      // renderTabMenu bails out when the menu is hidden, so this is cheap.
+      try { renderTabMenu(); } catch {}
+    });
+  }
+
   function updateIndicator() {
     let anyOpen = false, anyConnecting = false;
     for (const t of tabs.values()) {
@@ -67,24 +81,34 @@
   }
 
   function withWorkspace(path) {
-    if (!WORKSPACE_CWD) return path;  // let server use default HOME
+    // Once the URL's cwd has been rejected as invalid, stop sending it.
+    if (!WORKSPACE_CWD || _fallback_active) return path;
     const sep = path.includes("?") ? "&" : "?";
     return path + sep + "cwd=" + encodeURIComponent(WORKSPACE_CWD);
   }
 
-  function api(method, path, body) {
+  function api(method, path, body, { noWorkspace = false } = {}) {
     const opts = { method, headers: {}, credentials: "same-origin" };
     if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
-    return fetch(BASE + withWorkspace(path), opts).then(async (r) => {
-      if (!r.ok) throw new Error(`${method} ${path}: ${r.status}`);
+    const finalPath = noWorkspace ? path : withWorkspace(path);
+    return fetch(BASE + finalPath, opts).then(async (r) => {
+      if (!r.ok) {
+        const err = new Error(`${method} ${path}: ${r.status}`);
+        err.status = r.status;
+        throw err;
+      }
       return r.json();
     });
   }
 
   function renderTab(t) {
+    // Whenever any tab's visual state changes, the brand menu (if open) should
+    // reflect it. Defer the DOM rebuild to the end of the microtask queue so
+    // callers that update name/cwd in a tight loop don't thrash the menu.
+    scheduleMenuRefresh();
     t.tabEl.classList.toggle("active", t.id === activeId);
     t.tabEl.classList.toggle("unread", t.unread && t.id !== activeId);
     const nameSpan = t.tabEl.querySelector(".name");
@@ -293,16 +317,35 @@
     }
   }
 
+  // If the bookmarked ?cwd= refers to a workspace/session that no longer exists
+  // (dir removed, server restarted without the path, etc.), POST returns 400.
+  // Recover by creating a fresh tab in the server's default workspace (HOME).
   async function createTab() {
     if (tabs.size >= MAX_TABS) return;
     try {
-      // Starting cwd is implied by the workspace id (= ?cwd=), no body needed.
-      const meta = await api("POST", "/api/tabs");
+      const meta = await api("POST", "/api/tabs",
+                             undefined, { noWorkspace: _fallback_active });
       if (!tabs.has(meta.tab_id)) addTab(meta);
       activate(meta.tab_id);
     } catch (e) {
+      if (e && e.status === 400 && WORKSPACE_CWD && !_fallback_active) {
+        // cwd is invalid — forget it, retry without it (spec §4.10 fallback)
+        _fallback_active = true;
+        setStatusNote("workspace directory is missing — opened a new session");
+        try {
+          const meta = await api("POST", "/api/tabs",
+                                 undefined, { noWorkspace: true });
+          if (!tabs.has(meta.tab_id)) addTab(meta);
+          activate(meta.tab_id);
+          return;
+        } catch { /* fall through to indicator */ }
+      }
       updateIndicator();
     }
+  }
+
+  function setStatusNote(text) {
+    statusEl.title = text;  // surface via tooltip, keep dot color unchanged
   }
 
   async function closeTab(id) {
@@ -388,6 +431,8 @@
       case "pgdn":  return tilde(6);
       case "home":  return csi("H");
       case "end":   return csi("F");
+      case "altbksp": return "\x1b\x7f";  // spec §4.15: backward-kill-word
+      case "ctrlb":   return "\x02";      // spec §4.16: tmux prefix
       default: return "";
     }
   }
@@ -396,26 +441,121 @@
     if (!t || !t.ws || t.ws.readyState !== WebSocket.OPEN) return;
     t.ws.send(JSON.stringify({ type: "input", data }));
   }
-  document.querySelectorAll("#keypad .kp").forEach((btn) => {
+  // Mod keys (Ctrl / Alt) stay click-only — toggle sticky state.
+  document.querySelectorAll("#keypad .kp.mod").forEach((btn) => {
+    const mod = btn.dataset.mod;
     btn.addEventListener("click", (e) => {
       e.preventDefault();
-      const mod = btn.dataset.mod;
-      const key = btn.dataset.key;
-      if (mod) {
-        stickyMods[mod] = !stickyMods[mod];
-        btn.classList.toggle("on", stickyMods[mod]);
-        return;
-      }
-      if (key) {
-        const data = buildKey(key);
-        if (data) sendToActive(data);
-        clearStickyMods();
-        const t = activeId && tabs.get(activeId);
-        if (t && t.term) t.term.focus();
-      }
+      stickyMods[mod] = !stickyMods[mod];
+      btn.classList.toggle("on", stickyMods[mod]);
     });
-    // avoid the button stealing focus from xterm on touch
     btn.addEventListener("mousedown", (e) => e.preventDefault());
+  });
+
+  // Spec §4.14: non-modifier keypad buttons support press-and-hold repeat.
+  const REPEAT_DELAY_MS = 400;
+  const REPEAT_INTERVAL_MS = 75;
+  document.querySelectorAll("#keypad .kp[data-key]").forEach((btn) => {
+    const key = btn.dataset.key;
+    let timer1 = null, timer2 = null, lastPointerAt = 0;
+
+    const fire = () => {
+      const data = buildKey(key);
+      if (data) sendToActive(data);
+      clearStickyMods();
+    };
+    const stop = () => {
+      if (timer1) { clearTimeout(timer1); timer1 = null; }
+      if (timer2) { clearInterval(timer2); timer2 = null; }
+    };
+
+    btn.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      lastPointerAt = Date.now();
+      try { btn.setPointerCapture(e.pointerId); } catch {}
+      fire();
+      timer1 = setTimeout(() => {
+        timer2 = setInterval(fire, REPEAT_INTERVAL_MS);
+      }, REPEAT_DELAY_MS);
+    });
+    btn.addEventListener("pointerup", stop);
+    btn.addEventListener("pointercancel", stop);
+    btn.addEventListener("pointerleave", stop);
+    btn.addEventListener("lostpointercapture", stop);
+
+    // Keyboard-accessibility fallback: Space/Enter synthesize a click but no
+    // pointerdown. Fire once, but suppress if a pointer just fired.
+    btn.addEventListener("click", (e) => {
+      if (Date.now() - lastPointerAt < 500) return;
+      e.preventDefault();
+      fire();
+      const t = activeId && tabs.get(activeId);
+      if (t && t.term) t.term.focus();
+    });
+    btn.addEventListener("mousedown", (e) => e.preventDefault());
+  });
+
+  // Spec §4.13: brand button → drop-down menu of all tabs in this workspace.
+  const brandBtn = document.getElementById("brand-btn");
+  const tabMenu = document.getElementById("tab-menu");
+  function renderTabMenu() {
+    if (!tabMenu || tabMenu.hidden) return;
+    tabMenu.innerHTML = "";
+    for (const [id, t] of tabs.entries()) {
+      const item = document.createElement("div");
+      item.className = "tab-menu-item";
+      if (id === activeId) item.classList.add("active");
+      if (t.unread && id !== activeId) item.classList.add("unread");
+      item.setAttribute("role", "menuitem");
+      item.title = t.cwdFull || t.cwdDisplay || "";
+      const nameEl = document.createElement("span");
+      nameEl.className = "mi-name";
+      nameEl.textContent = t.name;
+      item.appendChild(nameEl);
+      if (t.cwdDisplay) {
+        const sep = document.createElement("span");
+        sep.className = "mi-sep";
+        sep.textContent = " — ";
+        item.appendChild(sep);
+        const cwdEl = document.createElement("span");
+        cwdEl.className = "mi-cwd";
+        cwdEl.textContent = t.cwdDisplay;
+        item.appendChild(cwdEl);
+      }
+      item.addEventListener("click", () => {
+        activate(id);
+        closeTabMenu();
+      });
+      tabMenu.appendChild(item);
+    }
+  }
+  function openTabMenu() {
+    if (!tabMenu) return;
+    tabMenu.hidden = false;
+    brandBtn.setAttribute("aria-expanded", "true");
+    renderTabMenu();
+  }
+  function closeTabMenu() {
+    if (!tabMenu) return;
+    tabMenu.hidden = true;
+    brandBtn.setAttribute("aria-expanded", "false");
+  }
+  function toggleTabMenu() {
+    if (!tabMenu) return;
+    tabMenu.hidden ? openTabMenu() : closeTabMenu();
+  }
+  if (brandBtn) {
+    brandBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleTabMenu(); });
+  }
+  // click outside / Esc → close
+  document.addEventListener("click", (e) => {
+    if (!tabMenu || tabMenu.hidden) return;
+    if (tabMenu.contains(e.target) || brandBtn.contains(e.target)) return;
+    closeTabMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (!tabMenu || tabMenu.hidden) return;
+    if (e.key === "Escape") { e.preventDefault(); closeTabMenu(); }
   });
 
   function refitActive() {
