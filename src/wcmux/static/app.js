@@ -12,6 +12,39 @@
   const tabs = new Map();
   let activeId = null;
 
+  // Sticky modifiers for the virtual keypad. Apply to the next character
+  // coming from xterm (physical or soft keyboard) per spec §4.12.
+  const stickyMods = { ctrl: false, alt: false };
+  function clearStickyMods() {
+    stickyMods.ctrl = false; stickyMods.alt = false;
+    document.querySelectorAll(".kp.mod").forEach((b) => b.classList.remove("on"));
+  }
+  function ctrlOf(ch) {
+    // Ctrl+<char> → ASCII control char, else null (caller sends plain char).
+    const lo = ch.toLowerCase();
+    if (lo >= "a" && lo <= "z") return String.fromCharCode(lo.charCodeAt(0) - 96);
+    const map = { "@": "\x00", "[": "\x1b", "\\": "\x1c", "]": "\x1d",
+                  "^": "\x1e", "_": "\x1f", "?": "\x7f" };
+    return Object.prototype.hasOwnProperty.call(map, ch) ? map[ch] : null;
+  }
+  function transformStickyFirstChar(data) {
+    // Apply sticky Ctrl/Alt to the first code point of `data` (spec §4.12).
+    // Returns the transformed string; clears sticky state as a side effect.
+    if (!data || (!stickyMods.ctrl && !stickyMods.alt)) return data;
+    // first UTF-16 code unit is fine here: control chars we target are ASCII
+    const first = data[0];
+    const rest = data.slice(1);
+    let out = first;
+    if (stickyMods.ctrl) {
+      const c = ctrlOf(first);
+      if (c !== null) out = c;
+      // else: no mapping, send as-is
+    }
+    if (stickyMods.alt) out = "\x1b" + out;
+    clearStickyMods();
+    return out + rest;
+  }
+
   function updateIndicator() {
     let anyOpen = false, anyConnecting = false;
     for (const t of tabs.values()) {
@@ -101,8 +134,9 @@
     term.open(wrap);
 
     term.onData((d) => {
+      const out = transformStickyFirstChar(d);
       if (t.ws && t.ws.readyState === WebSocket.OPEN) {
-        t.ws.send(JSON.stringify({ type: "input", data: d }));
+        t.ws.send(JSON.stringify({ type: "input", data: out }));
       }
     });
 
@@ -286,7 +320,7 @@
   newTabBtn.addEventListener("click", createTab);
 
   // --- bottom keypad: Ctrl/Alt sticky modifiers + Esc/Tab/arrows/PgUp/PgDn ---
-  const stickyMods = { ctrl: false, alt: false };
+  // stickyMods + clearStickyMods are declared near the top of the file.
   function modCode() {
     // xterm modifier: 1 + (shift)+ (alt*2) + (ctrl*4); we only support ctrl+alt
     return 1 + (stickyMods.alt ? 2 : 0) + (stickyMods.ctrl ? 4 : 0);
@@ -317,10 +351,6 @@
     if (!t || !t.ws || t.ws.readyState !== WebSocket.OPEN) return;
     t.ws.send(JSON.stringify({ type: "input", data }));
   }
-  function clearMods() {
-    stickyMods.ctrl = false; stickyMods.alt = false;
-    document.querySelectorAll(".kp.mod").forEach((b) => b.classList.remove("on"));
-  }
   document.querySelectorAll("#keypad .kp").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.preventDefault();
@@ -334,7 +364,7 @@
       if (key) {
         const data = buildKey(key);
         if (data) sendToActive(data);
-        clearMods();
+        clearStickyMods();
         const t = activeId && tabs.get(activeId);
         if (t && t.term) t.term.focus();
       }
