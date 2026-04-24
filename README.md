@@ -6,6 +6,17 @@ proxy subpaths).
 
 Supported platforms: Linux, macOS, Windows 10 1809+. Python ≥ 3.10.
 
+<p align="center">
+  <img src="images/wcmux1.jpg" alt="Mobile keypad with ] ` \ keys" width="32%">
+  <img src="images/wcmux2.jpg" alt="Tab dropdown menu" width="32%">
+  <img src="images/wcmux3.jpg" alt="Workspace switcher" width="32%">
+</p>
+
+Mobile-first: bottom keypad layers sticky Ctrl/Alt, arrows/PgUp/PgDn, tmux
+prefix `^B`, and the shell symbols (`]` `` ` `` `\`) that Android/iOS
+soft keyboards bury two layers deep. Brand-button dropdown switches tabs
+within a workspace; workspaces are keyed by cwd so sessions survive reloads.
+
 ## Install
 
 ```bash
