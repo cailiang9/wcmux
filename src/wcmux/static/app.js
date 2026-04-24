@@ -413,6 +413,17 @@
     // xterm modifier: 1 + (shift)+ (alt*2) + (ctrl*4); we only support ctrl+alt
     return 1 + (stickyMods.alt ? 2 : 0) + (stickyMods.ctrl ? 4 : 0);
   }
+  function charKey(ch) {
+    // spec §4.17: plain character keys honor sticky Ctrl (via ctrlOf map) and
+    // sticky Alt (prepend ESC). fire() clears sticky state after this returns.
+    let out = ch;
+    if (stickyMods.ctrl) {
+      const c = ctrlOf(ch);
+      if (c !== null) out = c;
+    }
+    if (stickyMods.alt) out = "\x1b" + out;
+    return out;
+  }
   function buildKey(name) {
     const m = modCode();
     const modded = m !== 1;
@@ -433,6 +444,9 @@
       case "end":   return csi("F");
       case "altbksp": return "\x1b\x7f";  // spec §4.15: backward-kill-word
       case "ctrlb":   return "\x02";      // spec §4.16: tmux prefix
+      case "rbracket":  return charKey("]");   // spec §4.17
+      case "backtick":  return charKey("`");
+      case "backslash": return charKey("\\");
       default: return "";
     }
   }
