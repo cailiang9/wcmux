@@ -27,6 +27,8 @@ html, body { margin: 0; padding: 0; height: 100%; background: #0c0c0c; color: #d
 .tab-menu-item .mi-name { font-weight: 500; }
 .tab-menu-item .mi-sep { color: #666; }
 .tab-menu-item .mi-cwd { color: #8aa; }
+.tab-menu-sep { height: 1px; background: #2a2a2a; margin: 4px 6px; }
+.tab-menu-item.tab-menu-action { color: #9bd; }
 #tabs { display: flex; gap: 4px; overflow-x: auto; flex: 1 1 auto; }
 .tab { display: flex; align-items: center; gap: 6px; padding: 3px 8px;
        background: #222; border: 1px solid #2a2a2a; border-radius: 3px;

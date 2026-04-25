@@ -494,44 +494,33 @@
 
   newTabBtn.addEventListener("click", createTab);
 
-  // Spec §4.19: "记住此设备" button toggles a device token in localStorage.
-  const deviceBtn = document.getElementById("device-btn");
-  function refreshDeviceBtnLabel() {
-    if (!deviceBtn) return;
-    let has = false;
-    try { has = !!localStorage.getItem(DEVICE_TOKEN_KEY); } catch {}
-    deviceBtn.textContent = has ? "忘记此设备" : "记住此设备";
-    deviceBtn.title = has
-      ? "Forget this device (revoke its token, future visits will require login)"
-      : "Remember this device (skip future logins on this browser)";
-  }
-  if (deviceBtn) {
-    refreshDeviceBtnLabel();
-    deviceBtn.addEventListener("click", async () => {
+  // Spec §4.19: device-token toggle lives inside the brand drop-down menu
+  // (renderTabMenu appends it). Toolbar stays icon-only to keep mobile width.
+  let _deviceBusy = false;
+  async function toggleDeviceToken() {
+    if (_deviceBusy) return;
+    _deviceBusy = true;
+    try {
       let has = null;
       try { has = localStorage.getItem(DEVICE_TOKEN_KEY); } catch {}
-      deviceBtn.disabled = true;
-      try {
-        if (has) {
-          let id = "";
-          try { id = localStorage.getItem(DEVICE_ID_KEY) || ""; } catch {}
-          if (id) {
-            try { await api("DELETE", "/api/auth/devices/" + encodeURIComponent(id), undefined, { noWorkspace: true }); } catch {}
-          }
-          try { localStorage.removeItem(DEVICE_TOKEN_KEY); localStorage.removeItem(DEVICE_ID_KEY); } catch {}
-        } else {
-          const label = navigator.userAgent ? navigator.userAgent.slice(0, 96) : "device";
-          const r = await api("POST", "/api/auth/issue-device-token", { label }, { noWorkspace: true });
-          try {
-            localStorage.setItem(DEVICE_TOKEN_KEY, r.token);
-            localStorage.setItem(DEVICE_ID_KEY, r.id);
-          } catch {}
+      if (has) {
+        let id = "";
+        try { id = localStorage.getItem(DEVICE_ID_KEY) || ""; } catch {}
+        if (id) {
+          try { await api("DELETE", "/api/auth/devices/" + encodeURIComponent(id), undefined, { noWorkspace: true }); } catch {}
         }
-      } finally {
-        deviceBtn.disabled = false;
-        refreshDeviceBtnLabel();
+        try { localStorage.removeItem(DEVICE_TOKEN_KEY); localStorage.removeItem(DEVICE_ID_KEY); } catch {}
+      } else {
+        const label = navigator.userAgent ? navigator.userAgent.slice(0, 96) : "device";
+        const r = await api("POST", "/api/auth/issue-device-token", { label }, { noWorkspace: true });
+        try {
+          localStorage.setItem(DEVICE_TOKEN_KEY, r.token);
+          localStorage.setItem(DEVICE_ID_KEY, r.id);
+        } catch {}
       }
-    });
+    } finally {
+      _deviceBusy = false;
+    }
   }
 
   // Spec §4.7: "?" button opens the shortcut reference
@@ -679,6 +668,24 @@
       });
       tabMenu.appendChild(item);
     }
+    // Footer: device-token toggle (spec §4.19).
+    const sep = document.createElement("div");
+    sep.className = "tab-menu-sep";
+    tabMenu.appendChild(sep);
+    let hasTok = false;
+    try { hasTok = !!localStorage.getItem(DEVICE_TOKEN_KEY); } catch {}
+    const dev = document.createElement("div");
+    dev.className = "tab-menu-item tab-menu-action";
+    dev.setAttribute("role", "menuitem");
+    dev.title = hasTok
+      ? "Forget this device (revoke its token, future visits will require login)"
+      : "Remember this device (skip future logins on this browser)";
+    dev.textContent = hasTok ? "忘记此设备" : "记住此设备";
+    dev.addEventListener("click", async () => {
+      await toggleDeviceToken();
+      renderTabMenu();
+    });
+    tabMenu.appendChild(dev);
   }
   function openTabMenu() {
     if (!tabMenu) return;
