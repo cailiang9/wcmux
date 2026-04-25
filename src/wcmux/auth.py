@@ -148,8 +148,13 @@ def _new_sid() -> str:
 def require_auth(request: Request) -> None:
     if not request.session.get("authed"):
         config = request.app.state.config
+        # API/XHR callers can't usefully follow a 307 to /login (fetch silently
+        # re-issues the original method and produces 422). Return 401 JSON so
+        # the client can window.location.href themselves.
+        if request.url.path.startswith(f"{config.base_url}/api/") or \
+           request.url.path.startswith("/api/"):
+            raise HTTPException(status_code=401, detail="auth required")
         nxt = request.url.path
-        # Append query string if present
         if request.url.query:
             nxt = nxt + "?" + request.url.query
         raise HTTPException(

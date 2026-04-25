@@ -129,11 +129,18 @@ def create_app(config: Config) -> FastAPI:
     @app.websocket("/ws/{tab_id}")
     async def ws_tab(ws: WebSocket, tab_id: str) -> None:
         if not ws.session.get("authed"):
+            # accept() before close() so the close-frame (with our 4401 code)
+            # actually reaches the browser. Without accept(), Starlette returns
+            # an HTTP 403 handshake-failure and the browser only sees code=1006.
+            await ws.accept()
             await ws.close(code=4401)
             return
         registry: SessionRegistry = ws.app.state.registry
         tab = registry.find_tab(tab_id)
         if not tab:
+            # see comment above on accept()+close() — same applies here so the
+            # browser actually sees code=4404 instead of an opaque 1006.
+            await ws.accept()
             await ws.close(code=4404)
             return
 

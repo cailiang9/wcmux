@@ -95,6 +95,12 @@
     }
     const finalPath = noWorkspace ? path : withWorkspace(path);
     return fetch(BASE + finalPath, opts).then(async (r) => {
+      if (r.status === 401) {
+        // session expired — jump to login; current call is abandoned.
+        window.location.href = BASE + "/login";
+        // resolve never; throw so callers' .catch sees a definite failure
+        throw Object.assign(new Error("auth required"), { status: 401 });
+      }
       if (!r.ok) {
         const err = new Error(`${method} ${path}: ${r.status}`);
         err.status = r.status;
