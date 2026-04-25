@@ -18,7 +18,9 @@
     <button id="new-tab" title="New tab (Ctrl+Alt+T)">+</button>
     <span id="status" class="status" title="connecting"></span>
     <button id="help-btn" class="logout" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">?</button>
-    <form method="POST" action="{{ base_url }}/logout" style="margin-left:auto">
+    <button id="device-btn" class="logout" title="Remember this device (skip future logins on this browser)"
+            style="margin-left:auto">记住此设备</button>
+    <form method="POST" action="{{ base_url }}/logout">
       <button type="submit" class="logout">logout</button>
     </form>
   </div>

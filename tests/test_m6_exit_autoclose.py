@@ -85,10 +85,19 @@ async def main():
     ids = [t["tab_id"] for t in json.loads(body)["tabs"]]
     results.append(("tab removed from registry", tid not in ids, f"ids={ids}"))
 
-    # reconnecting to the now-gone tab should be 4404 (or 403)
+    # Reconnecting to the now-gone tab should be rejected: server accepts then
+    # sends close-frame 4404 (so browser can read it instead of opaque 1006).
     try:
-        async with websockets.connect(ws_url, additional_headers={"Cookie": c.cookie_header()}) as ws2:
-            results.append(("reconnect to dead tab fails", False, "connected unexpectedly"))
+        ws2 = await websockets.connect(ws_url, additional_headers={"Cookie": c.cookie_header()})
+        code = None
+        try:
+            await ws2.recv()
+        except websockets.ConnectionClosed as e:
+            code = getattr(e, "code", None) or (e.rcvd.code if getattr(e, "rcvd", None) else None)
+        finally:
+            try: await ws2.close()
+            except Exception: pass
+        results.append(("reconnect to dead tab fails", code == 4404, f"close code={code}"))
     except Exception as e:
         msg = str(e)
         ok = "4404" in msg or "404" in msg or "403" in msg or "reject" in msg.lower()

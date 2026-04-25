@@ -117,19 +117,32 @@ async def main() -> int:
         got_exit = any(f.get("type") == "exit" for f in frames)
         results.append(("exit", got_exit, ""))
 
-    # unauthenticated WS should be rejected
+    # unauthenticated WS: server now accepts then sends close-frame 4401 so
+    # the browser can read the code (vs. opaque 1006 from a bare 403).
+    async def _expect_close_code(url: str, *, headers: dict | None = None) -> int | None:
+        ws = await websockets.connect(url, additional_headers=headers or {})
+        try:
+            try:
+                await ws.recv()
+            except websockets.ConnectionClosed as e:
+                return getattr(e, "code", None) or (e.rcvd.code if getattr(e, "rcvd", None) else None)
+            return None
+        finally:
+            try: await ws.close()
+            except Exception: pass
+
     try:
-        async with websockets.connect(ws_url) as _:
-            results.append(("ws_auth_reject", False, "connected without cookie"))
+        code = await _expect_close_code(ws_url)
+        results.append(("ws_auth_reject", code == 4401, f"close code={code}"))
     except Exception as e:
+        # legacy fallback: handshake refused (close-before-accept) is also acceptable
         msg = str(e)
         ok = "401" in msg or "403" in msg or "4401" in msg or "reject" in msg.lower()
         results.append(("ws_auth_reject", ok, f"{type(e).__name__}: {msg[:80]}"))
 
-    # WS to a non-existent tab_id (authed) should be rejected
     try:
-        async with websockets.connect(ws_url + "-bad", additional_headers={"Cookie": cookie}) as _:
-            results.append(("ws_bad_tab_reject", False, "connected to bad id"))
+        code = await _expect_close_code(ws_url + "-bad", headers={"Cookie": cookie})
+        results.append(("ws_bad_tab_reject", code == 4404, f"close code={code}"))
     except Exception as e:
         msg = str(e)
         ok = "403" in msg or "404" in msg or "4404" in msg or "reject" in msg.lower()

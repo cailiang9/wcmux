@@ -20,6 +20,9 @@ LOG="${WCMUX_TEST_LOG:-/tmp/wcmux.log}"
 unset WCMUX_PORT WCMUX_HOST WCMUX_BASE_URL WCMUX_PASSWORD_HASH \
       WCMUX_SHELL WCMUX_SECRET_KEY WCMUX_TRUST_PROXY
 export WCMUX_PASSWORD="${WCMUX_PASSWORD:-pw}"
+# Per-run device token registry — never touch the real ~/.local/share/wcmux.
+export WCMUX_DEVICES_FILE="${WCMUX_DEVICES_FILE:-/tmp/wcmux-test-devices.json}"
+rm -f "$WCMUX_DEVICES_FILE" 2>/dev/null || true
 
 unset http_proxy https_proxy
 

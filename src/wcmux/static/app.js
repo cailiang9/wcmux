@@ -87,7 +87,35 @@
     return path + sep + "cwd=" + encodeURIComponent(WORKSPACE_CWD);
   }
 
-  function api(method, path, body, { noWorkspace = false } = {}) {
+  // Spec §4.19: long-lived device token in localStorage. Lets us re-establish
+  // the session cookie without prompting the user when the browser drops it.
+  const DEVICE_TOKEN_KEY = "wcmux_device_token";
+  const DEVICE_ID_KEY = "wcmux_device_id";
+
+  async function tryExchangeDeviceToken() {
+    const tok = (() => { try { return localStorage.getItem(DEVICE_TOKEN_KEY); } catch { return null; } })();
+    if (!tok) return false;
+    try {
+      const r = await fetch(BASE + "/api/auth/exchange", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ token: tok }),
+      });
+      if (!r.ok) {
+        if (r.status === 401) {
+          // token revoked or signature dead — drop it so we don't loop.
+          try { localStorage.removeItem(DEVICE_TOKEN_KEY); localStorage.removeItem(DEVICE_ID_KEY); } catch {}
+        }
+        return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function api(method, path, body, { noWorkspace = false, _retried = false } = {}) {
     const opts = { method, headers: {}, credentials: "same-origin" };
     if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
@@ -96,9 +124,12 @@
     const finalPath = noWorkspace ? path : withWorkspace(path);
     return fetch(BASE + finalPath, opts).then(async (r) => {
       if (r.status === 401) {
-        // session expired — jump to login; current call is abandoned.
+        // Try once to resurrect the session via a stored device token.
+        if (!_retried && await tryExchangeDeviceToken()) {
+          return api(method, path, body, { noWorkspace, _retried: true });
+        }
+        // No token, exchange failed, or already retried: jump to login.
         window.location.href = BASE + "/login";
-        // resolve never; throw so callers' .catch sees a definite failure
         throw Object.assign(new Error("auth required"), { status: 401 });
       }
       if (!r.ok) {
@@ -257,10 +288,18 @@
     ws.onclose = (ev) => {
       stopHeartbeat(t);
       // backend explicit rejects:
-      //   4401 — session expired; redirect to login
+      //   4401 — session expired; try device-token exchange before falling back to /login
       //   4404 — tab no longer exists (5-min retention expired, or shell exited)
       if (ev.code === 4401) {
-        window.location.href = BASE + "/login";
+        (async () => {
+          if (await tryExchangeDeviceToken()) {
+            // cookie restored — let the next visible/focus event reconnect
+            t.retryDelay = RETRY_INITIAL_MS;
+            scheduleRetry(t);
+          } else {
+            window.location.href = BASE + "/login";
+          }
+        })();
         return;
       }
       if (ev.code === 4404) {
@@ -454,6 +493,46 @@
   }, true);
 
   newTabBtn.addEventListener("click", createTab);
+
+  // Spec §4.19: "记住此设备" button toggles a device token in localStorage.
+  const deviceBtn = document.getElementById("device-btn");
+  function refreshDeviceBtnLabel() {
+    if (!deviceBtn) return;
+    let has = false;
+    try { has = !!localStorage.getItem(DEVICE_TOKEN_KEY); } catch {}
+    deviceBtn.textContent = has ? "忘记此设备" : "记住此设备";
+    deviceBtn.title = has
+      ? "Forget this device (revoke its token, future visits will require login)"
+      : "Remember this device (skip future logins on this browser)";
+  }
+  if (deviceBtn) {
+    refreshDeviceBtnLabel();
+    deviceBtn.addEventListener("click", async () => {
+      let has = null;
+      try { has = localStorage.getItem(DEVICE_TOKEN_KEY); } catch {}
+      deviceBtn.disabled = true;
+      try {
+        if (has) {
+          let id = "";
+          try { id = localStorage.getItem(DEVICE_ID_KEY) || ""; } catch {}
+          if (id) {
+            try { await api("DELETE", "/api/auth/devices/" + encodeURIComponent(id), undefined, { noWorkspace: true }); } catch {}
+          }
+          try { localStorage.removeItem(DEVICE_TOKEN_KEY); localStorage.removeItem(DEVICE_ID_KEY); } catch {}
+        } else {
+          const label = navigator.userAgent ? navigator.userAgent.slice(0, 96) : "device";
+          const r = await api("POST", "/api/auth/issue-device-token", { label }, { noWorkspace: true });
+          try {
+            localStorage.setItem(DEVICE_TOKEN_KEY, r.token);
+            localStorage.setItem(DEVICE_ID_KEY, r.id);
+          } catch {}
+        }
+      } finally {
+        deviceBtn.disabled = false;
+        refreshDeviceBtnLabel();
+      }
+    });
+  }
 
   // Spec §4.7: "?" button opens the shortcut reference
   const helpBtn = document.getElementById("help-btn");

@@ -4,10 +4,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from fastapi import APIRouter, Form, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from .devices import issue_token as issue_device_token, verify_token as verify_device_token
 from .passhash import verify as verify_hash
 
 MAX_FAILS = 5
@@ -120,6 +121,62 @@ def build_auth_router(templates: Jinja2Templates) -> APIRouter:
         request.session["sid"] = request.session.get("sid") or _new_sid()
         target = _safe_next(next, config.base_url)
         return RedirectResponse(target, status_code=status.HTTP_303_SEE_OTHER)
+
+    # ---------- device tokens (spec §4.19) ----------
+    # Long-lived signed tokens stored in localStorage so the user doesn't have
+    # to re-enter the password every time the cookie gets evicted by the
+    # browser (mobile/HTTP cookie cleanup is the usual culprit).
+
+    @router.post("/api/auth/issue-device-token")
+    async def issue_token_route(request: Request, _=Depends(require_auth)):
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        label = (body or {}).get("label", "") or ""
+        if not isinstance(label, str):
+            label = ""
+        config = request.app.state.config
+        dev = request.app.state.devices.create(label=label)
+        token = issue_device_token(config.secret_key, dev["id"])
+        return JSONResponse({"token": token, "id": dev["id"]})
+
+    @router.post("/api/auth/exchange")
+    async def exchange_token_route(request: Request):
+        # Same lockout bucket as /login: brute-force on either path counts.
+        lockout: LockoutRegistry = request.app.state.lockout
+        ip = _client_ip(request)
+        if lockout.is_locked(ip):
+            raise HTTPException(status_code=429, detail="too many attempts")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        token = (body or {}).get("token", "")
+        if not isinstance(token, str):
+            token = ""
+        config = request.app.state.config
+        dev_id = verify_device_token(config.secret_key, token)
+        if not dev_id or not request.app.state.devices.touch(dev_id):
+            lockout.record_failure(ip)
+            raise HTTPException(status_code=401, detail="invalid or revoked token")
+        lockout.record_success(ip)
+        request.session["authed"] = True
+        request.session["sid"] = request.session.get("sid") or _new_sid()
+        request.session["seen"] = int(time.time())
+        return JSONResponse({"ok": True, "id": dev_id})
+
+    @router.get("/api/auth/devices")
+    async def list_devices_route(request: Request, _=Depends(require_auth)):
+        return JSONResponse({"devices": request.app.state.devices.list()})
+
+    @router.delete("/api/auth/devices/{device_id}")
+    async def revoke_device_route(device_id: str, request: Request,
+                                  _=Depends(require_auth)):
+        ok = request.app.state.devices.revoke(device_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="not found")
+        return JSONResponse({"ok": True})
 
     @router.post("/logout")
     async def logout(request: Request):

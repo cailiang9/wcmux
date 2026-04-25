@@ -14,6 +14,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .auth import LockoutRegistry, build_auth_router, require_auth
 from .config import Config
+from .devices import DeviceRegistry
 from .sessions import (
     SessionRegistry,
     cwd_is_valid,
@@ -42,6 +43,7 @@ def create_app(config: Config) -> FastAPI:
     app.state.config = config
     app.state.lockout = LockoutRegistry()
     app.state.registry = SessionRegistry(shell=config.shell)
+    app.state.devices = DeviceRegistry()
 
     app.add_middleware(
         SessionMiddleware,
