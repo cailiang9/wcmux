@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -46,7 +47,7 @@ def create_app(config: Config) -> FastAPI:
         SessionMiddleware,
         secret_key=config.secret_key,
         session_cookie="wcmux_session",
-        max_age=7 * 86400,
+        max_age=30 * 86400,
         same_site="lax",
         https_only=False,
     )
@@ -135,6 +136,12 @@ def create_app(config: Config) -> FastAPI:
             await ws.accept()
             await ws.close(code=4401)
             return
+        # Touch session occasionally so SessionMiddleware refreshes the cookie's
+        # Expires on the WS handshake response — keeps long-lived terminal pages
+        # from quietly drifting past max_age while the user just types.
+        _now = int(time.time())
+        if _now - int(ws.session.get("seen", 0)) >= 6 * 3600:
+            ws.session["seen"] = _now
         registry: SessionRegistry = ws.app.state.registry
         tab = registry.find_tab(tab_id)
         if not tab:

@@ -145,6 +145,9 @@ def _new_sid() -> str:
     return secrets.token_urlsafe(16)
 
 
+SESSION_REFRESH_INTERVAL = 6 * 3600  # refresh Set-Cookie at most every 6h
+
+
 def require_auth(request: Request) -> None:
     if not request.session.get("authed"):
         config = request.app.state.config
@@ -161,3 +164,9 @@ def require_auth(request: Request) -> None:
             status_code=status.HTTP_307_TEMPORARY_REDIRECT,
             headers={"Location": f"{config.base_url}/login?next={nxt}"},
         )
+    # Authed — opportunistically touch the session so SessionMiddleware emits
+    # a fresh Set-Cookie (rolling Expires). Some browsers drop long-untouched
+    # cookies on plain HTTP; periodic refresh keeps the cookie "seen recently".
+    now = int(time.time())
+    if now - int(request.session.get("seen", 0)) >= SESSION_REFRESH_INTERVAL:
+        request.session["seen"] = now
