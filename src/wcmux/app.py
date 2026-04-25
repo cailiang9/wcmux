@@ -184,6 +184,9 @@ def create_app(config: Config) -> FastAPI:
                     rows = int(msg.get("rows", 24))
                     cols = int(msg.get("cols", 80))
                     registry.update_viewport(tab, q, rows, cols)
+                elif t == "ping":
+                    # spec §4.18: app-level heartbeat; do not forward to PTY
+                    await ws.send_text(json.dumps({"type": "pong", "ts": msg.get("ts")}))
         except Exception:
             pass
         finally:

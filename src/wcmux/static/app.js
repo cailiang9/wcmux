@@ -181,6 +181,49 @@
   }
 
   const RECONNECT_MIN_MS = 1000;
+  // spec §4.18: app-level heartbeat
+  const HEARTBEAT_INTERVAL_MS = 25000;
+  const HEARTBEAT_TIMEOUT_MS = 10000;
+  // spec §4.9: exponential backoff for persistent retry while visible
+  const RETRY_INITIAL_MS = 1000;
+  const RETRY_MAX_MS = 30000;
+
+  function stopHeartbeat(t) {
+    if (t.pingTimer) { clearInterval(t.pingTimer); t.pingTimer = null; }
+    if (t.pongTimer) { clearTimeout(t.pongTimer); t.pongTimer = null; }
+  }
+  function sendPing(t) {
+    if (!t.ws || t.ws.readyState !== WebSocket.OPEN) return;
+    try { t.ws.send(JSON.stringify({ type: "ping", ts: Date.now() })); } catch { return; }
+    if (t.pongTimer) clearTimeout(t.pongTimer);
+    t.pongTimer = setTimeout(() => {
+      // No server activity within window → treat as dead, trigger reconnect flow
+      try { t.ws && t.ws.close(4000, "heartbeat timeout"); } catch {}
+    }, HEARTBEAT_TIMEOUT_MS);
+  }
+  function startHeartbeat(t) {
+    stopHeartbeat(t);
+    if (document.visibilityState !== "visible") return;
+    t.pingTimer = setInterval(() => sendPing(t), HEARTBEAT_INTERVAL_MS);
+  }
+  function bumpLiveness(t) {
+    // Any server message proves the connection is alive — cancel pending pong wait.
+    if (t.pongTimer) { clearTimeout(t.pongTimer); t.pongTimer = null; }
+  }
+
+  function cancelRetry(t) {
+    if (t.retryTimer) { clearTimeout(t.retryTimer); t.retryTimer = null; }
+  }
+  function scheduleRetry(t) {
+    if (t.retryTimer) return;
+    if (document.visibilityState !== "visible") return;  // pause while hidden
+    const delay = t.retryDelay || RETRY_INITIAL_MS;
+    t.retryDelay = Math.min(delay * 2, RETRY_MAX_MS);
+    t.retryTimer = setTimeout(() => {
+      t.retryTimer = null;
+      connectTab(t);
+    }, delay);
+  }
 
   function connectTab(t) {
     const now = Date.now();
@@ -191,6 +234,7 @@
       return;  // throttle per-tab reconnects (spec §4.9)
     }
     t.lastConnectAt = now;
+    cancelRetry(t);
 
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const url = `${proto}://${location.host}${BASE}/ws/${t.id}`;
@@ -199,10 +243,13 @@
     updateIndicator();
 
     ws.onopen = () => {
+      t.retryDelay = RETRY_INITIAL_MS;  // reset backoff on success (spec §4.9)
       sendResize(t);
+      startHeartbeat(t);
       updateIndicator();
     };
     ws.onclose = (ev) => {
+      stopHeartbeat(t);
       // backend explicit rejects:
       //   4401 — session expired; redirect to login
       //   4404 — tab no longer exists (5-min retention expired, or shell exited)
@@ -217,11 +264,14 @@
         return;
       }
       updateIndicator();
+      scheduleRetry(t);  // spec §4.9: persistent retry while page is visible
     };
     ws.onerror = () => updateIndicator();
     ws.onmessage = (ev) => {
+      bumpLiveness(t);
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === "pong") return;  // spec §4.18: heartbeat ack
       if (msg.type === "output" || msg.type === "replay") {
         t.term.write(msg.data);
         if (msg.type === "output" && t.id !== activeId) {
@@ -245,6 +295,8 @@
   function cleanupLocalTab(id) {
     const t = tabs.get(id);
     if (!t) return;
+    stopHeartbeat(t);
+    cancelRetry(t);
     try { t.ws && t.ws.close(); } catch {}
     try { t.term.dispose(); } catch {}
     if (t.tabEl) t.tabEl.remove();
@@ -618,6 +670,8 @@
   function reconnectStaleTabs() {
     for (const t of tabs.values()) {
       if (!t.ws || t.ws.readyState === WebSocket.CLOSED || t.ws.readyState === WebSocket.CLOSING) {
+        t.retryDelay = RETRY_INITIAL_MS;  // spec §4.9: focus/visible/online restart from shortest delay
+        cancelRetry(t);
         connectTab(t);
       }
     }
@@ -628,7 +682,22 @@
   window.addEventListener("focus", reconnectStaleTabs);
   window.addEventListener("online", reconnectStaleTabs);
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") reconnectStaleTabs();
+    if (document.visibilityState === "visible") {
+      // Resume heartbeats on already-open tabs and probe once immediately (spec §4.18).
+      for (const t of tabs.values()) {
+        if (t.ws && t.ws.readyState === WebSocket.OPEN) {
+          startHeartbeat(t);
+          sendPing(t);
+        }
+      }
+      reconnectStaleTabs();
+    } else {
+      // Hidden: pause heartbeat + retry timers to save power; they resume on 'visible'.
+      for (const t of tabs.values()) {
+        stopHeartbeat(t);
+        cancelRetry(t);
+      }
+    }
   });
 
   bootstrap();
