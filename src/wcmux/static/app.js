@@ -203,6 +203,12 @@
     });
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
+    // Auto-detect URLs and make them tappable; force noopener for safety.
+    if (typeof WebLinksAddon !== "undefined" && WebLinksAddon.WebLinksAddon) {
+      term.loadAddon(new WebLinksAddon.WebLinksAddon((event, uri) => {
+        try { window.open(uri, "_blank", "noopener,noreferrer"); } catch {}
+      }));
+    }
     term.open(wrap);
 
     term.onData((d) => {
