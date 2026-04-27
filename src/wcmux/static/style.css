@@ -77,6 +77,24 @@ button.logout:hover { background: #444; }
              display: none; }
 .term-wrap.active { display: block; }
 
+/* Overlay-style scrollbar for xterm: reserve the gutter at all times so the
+   column count never reflows when scrollback appears/disappears, and paint
+   the bar thin + translucent so it visually "floats" over content. */
+.xterm-viewport {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;                              /* Firefox */
+  scrollbar-color: rgba(255,255,255,0.22) transparent;/* Firefox: thumb / track */
+}
+.xterm-viewport::-webkit-scrollbar { width: 8px; height: 8px; }
+.xterm-viewport::-webkit-scrollbar-track { background: transparent; }
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.18);
+  border-radius: 4px;
+}
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.36);
+}
+
 #keypad { position: fixed; left: 0; right: 0; bottom: var(--kb);
           height: var(--kp-h);
           display: flex; flex-direction: column; gap: 3px;
