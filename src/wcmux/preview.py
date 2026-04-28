@@ -268,8 +268,9 @@ def api_search(request: Request,
                q: str = Query(default=""),
                limit: int = Query(default=50, ge=1, le=200),
                _=Depends(require_auth)) -> JSONResponse:
-    """Spec §4.22: filename substring search across PREVIEW_ROOT, capped at
-    SEARCH_MAX_DEPTH levels of nested dirs, skipping hidden + deny-listed dirs.
+    """Spec §4.22: name substring search across PREVIEW_ROOT, capped at
+    SEARCH_MAX_DEPTH levels of nested dirs, skipping hidden + deny-listed.
+    Matches both directory names (type='dir') and file names (type=<ftype>).
     Empty q returns []."""
     if not q:
         return JSONResponse({"results": []})
@@ -284,11 +285,34 @@ def api_search(request: Request,
             continue
         depth = 0 if str(rel) == "." else len(rel.parts)
         # Filter children we'll descend into: drop hidden + deny-listed.
-        dirnames[:] = [
+        # Match dir names BEFORE pruning, so a directory whose own name matches
+        # but is itself deny-listed (e.g. user typed "node") is excluded.
+        kept_dirs = [
             d for d in dirnames
             if not d.startswith(".") and d not in SEARCH_DENY_DIRS
         ]
-        # Don't go deeper than SEARCH_MAX_DEPTH levels of dirs from root.
+        # A child dir's own depth is depth+1; only return it as a match if it
+        # fits within the SEARCH_MAX_DEPTH budget (otherwise we'd surface dirs
+        # users can't even see in the file browser).
+        if depth < SEARCH_MAX_DEPTH:
+            for d in kept_dirs:
+                if q_lower in d.lower():
+                    p = Path(dirpath) / d
+                    try:
+                        st = p.stat()
+                    except OSError:
+                        continue
+                    rel_path = str(p.relative_to(root)).replace(os.sep, "/")
+                    out.append({
+                        "path": rel_path,
+                        "name": d,
+                        "type": "dir",
+                        "size": "",
+                        "mtime": st.st_mtime,
+                        "mtime_display": format_time(st.st_mtime),
+                    })
+        dirnames[:] = kept_dirs
+        # Don't recurse deeper than SEARCH_MAX_DEPTH levels of dirs from root.
         if depth >= SEARCH_MAX_DEPTH:
             dirnames[:] = []
         for fname in filenames:

@@ -538,7 +538,7 @@
   let _previewDebounce = null;
   let _previewActiveIdx = -1;
   const PV_ICONS = {
-    image: "🖼️", markdown: "📝", code: "💻", text: "📄",
+    dir: "📁", image: "🖼️", markdown: "📝", code: "💻", text: "📄",
     html: "🌐", drawio: "📐", jsonl: "📊", unknown: "❓",
   };
 
@@ -548,8 +548,12 @@
     previewResultsEl.innerHTML = "";
     _previewActiveIdx = -1;
   }
-  function openPreviewURL(relPath) {
-    const url = BASE + "/static/preview/preview.html?path=" + encodeURIComponent(relPath);
+  function openPreviewURL(relPath, type) {
+    // Directories open the file-browser SPA pointing at that dir; files open
+    // the standalone preview page directly.
+    const page = type === "dir" ? "index.html" : "preview.html";
+    const url = BASE + "/static/preview/" + page +
+                "?path=" + encodeURIComponent(relPath);
     window.open(url, "_blank", "noopener,noreferrer");
   }
   function highlightPreviewActive() {
@@ -579,18 +583,19 @@
         const item = document.createElement("div");
         item.className = "pv-item";
         item.dataset.path = r.path;
+        item.dataset.type = r.type || "unknown";
         const icon = document.createElement("span");
         icon.className = "pv-icon";
         icon.textContent = PV_ICONS[r.type] || PV_ICONS.unknown;
         const name = document.createElement("span");
         name.className = "pv-name";
-        name.textContent = r.name;
+        name.textContent = r.type === "dir" ? r.name + "/" : r.name;
         const meta = document.createElement("span");
         meta.className = "pv-meta";
         meta.textContent = r.path + (r.size ? "  ·  " + r.size : "");
         item.append(icon, name, meta);
         item.addEventListener("click", () => {
-          openPreviewURL(r.path);
+          openPreviewURL(r.path, r.type);
           closePreviewResults();
           previewSearchEl.value = "";
         });
@@ -637,7 +642,7 @@
         e.preventDefault();
         const cur = items[_previewActiveIdx >= 0 ? _previewActiveIdx : 0];
         if (cur && cur.dataset.path) {
-          openPreviewURL(cur.dataset.path);
+          openPreviewURL(cur.dataset.path, cur.dataset.type);
           closePreviewResults();
           previewSearchEl.value = "";
         }

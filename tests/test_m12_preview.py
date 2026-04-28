@@ -149,6 +149,29 @@ def main() -> int:
                     all(not p.startswith("node_modules") for p in paths),
                     f"paths={paths}"))
 
+    # 4b) directory names also match (spec §4.22)
+    code, body = c.request("GET", "/api/preview/search?q=dir1")
+    payload = json.loads(body)
+    rows = payload.get("results", [])
+    dir_hit = any(r["path"] == "dir1" and r["type"] == "dir" for r in rows)
+    results.append(("dir name 'dir1' matches with type=dir",
+                    dir_hit, f"rows={rows}"))
+
+    code, body = c.request("GET", "/api/preview/search?q=dir2")
+    payload = json.loads(body)
+    rows = payload.get("results", [])
+    dir2_hit = any(r["path"] == "dir1/dir2" and r["type"] == "dir" for r in rows)
+    results.append(("nested dir 'dir1/dir2' matches",
+                    dir2_hit, f"rows={rows}"))
+
+    # depth-3 dir 'dir3' (its parent is at depth 2, so its parent's children
+    # iteration is suppressed): NOT returned
+    code, body = c.request("GET", "/api/preview/search?q=dir3")
+    payload = json.loads(body)
+    paths = [r["path"] for r in payload.get("results", [])]
+    results.append(("over-deep dir 'dir3' NOT returned",
+                    "dir1/dir2/dir3" not in paths, f"paths={paths}"))
+
     # 5) empty q
     code, body = c.request("GET", "/api/preview/search?q=")
     payload = json.loads(body)
