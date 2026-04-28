@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Preview</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- highlight.js via CDN -->
+  <link id="hljs-theme" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script>
+    // Apply saved theme immediately to avoid flash
+    (function() {
+      var t = localStorage.getItem('theme') || 'dark';
+      if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    })();
+  </script>
+</head>
+<body>
+<div id="app">
+  <div class="preview-header">
+    <a class="back-btn" id="back-btn" href="index.html">← 返回</a>
+    <div class="file-title" id="file-title">Loading...</div>
+    <button class="theme-toggle" id="theme-toggle" title="切换主题"></button>
+  </div>
+  <div id="content"><div class="state-msg"><div class="icon">⏳</div>Loading...</div></div>
+</div>
+
+<script>
+// Theme toggle
+function getTheme() { return localStorage.getItem('theme') || 'dark'; }
+function applyTheme(theme) {
+  if (theme === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
+  document.getElementById('theme-toggle').textContent = theme === 'light' ? '\u{1F319}' : '\u{2600}\u{FE0F}';
+  document.getElementById('hljs-theme').href = theme === 'light'
+    ? 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css'
+    : 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css';
+}
+applyTheme(getTheme());
+document.getElementById('theme-toggle').addEventListener('click', () => {
+  const next = getTheme() === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('theme', next);
+  applyTheme(next);
+});
+
+function getPath() {
+  return new URLSearchParams(location.search).get('path') || '';
+}
+
+// Spec §4.22: opened in a new window from wcmux's search dropdown; backing to
+// the file browser SPA should stay inside the preview namespace, not jump to
+// some absolute root that wouldn't exist when wcmux is reverse-proxied.
+const PREVIEW_INDEX = 'index.html';
+
+function getDir(p) {
+  const parts = p.split('/');
+  parts.pop();
+  return parts.join('/');
+}
+
+function getFilename(p) {
+  return p.split('/').pop();
+}
+
+function setTitle(path) {
+  const name = getFilename(path);
+  const dir = getDir(path);
+  document.title = name + ' - Preview';
+  document.getElementById('file-title').innerHTML =
+    `${name} <span>${dir ? '~/' + dir : '~'}</span>`;
+}
+
+function setBackLink(path) {
+  const dir = getDir(path);
+  const btn = document.getElementById('back-btn');
+  btn.href = dir ? `${PREVIEW_INDEX}?path=${encodeURIComponent(dir)}` : PREVIEW_INDEX;
+}
+
+function copyToClipboard(text, btn) {
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = '✓ Copied';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = '复制'; btn.classList.remove('copied'); }, 2000);
+  });
+}
+
+function renderCode(content, lang) {
+  const pre = document.createElement('pre');
+  const code = document.createElement('code');
+  code.className = lang ? `language-${lang}` : '';
+  code.textContent = content;
+  pre.appendChild(code);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'code-wrap';
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'code-toolbar';
+  toolbar.innerHTML = `<span class="code-lang">${lang || 'text'}</span>`;
+
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'copy-btn';
+  copyBtn.textContent = '复制';
+  copyBtn.onclick = () => copyToClipboard(content, copyBtn);
+  toolbar.appendChild(copyBtn);
+
+  wrap.appendChild(toolbar);
+  wrap.appendChild(pre);
+  return wrap;
+}
+
+async function load() {
+  const path = getPath();
+  if (!path) { location.href = PREVIEW_INDEX; return; }
+
+  setTitle(path);
+  setBackLink(path);
+
+  const content = document.getElementById('content');
+
+  try {
+    const res = await fetch('../../api/preview/file?path=' + encodeURIComponent(path));
+    if (!res.ok) {
+      const msg = await res.text();
+      content.innerHTML = `<div class="state-msg"><div class="icon">❌</div>${res.status === 404 ? '不支持的文件类型或文件不存在' : msg}</div>`;
+      return;
+    }
+    const data = await res.json();
+
+    if (data.type === 'markdown') {
+      const div = document.createElement('div');
+      div.className = 'md-body';
+      div.innerHTML = data.html;
+      // highlight code blocks inside markdown
+      div.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+      content.innerHTML = '';
+      content.appendChild(div);
+
+    } else if (data.type === 'code') {
+      let displayContent = data.content;
+      if (data.lang === 'json') {
+        try { displayContent = JSON.stringify(JSON.parse(data.content), null, 2); } catch(e) {}
+      }
+      const wrap = renderCode(displayContent, data.lang);
+      content.innerHTML = '';
+      content.appendChild(wrap);
+      wrap.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+
+    } else if (data.type === 'text') {
+      const wrap = document.createElement('div');
+      wrap.className = 'text-wrap';
+      const pre = document.createElement('pre');
+      pre.textContent = data.content;
+      wrap.appendChild(pre);
+      content.innerHTML = '';
+      content.appendChild(wrap);
+
+    } else if (data.type === 'image') {
+      const wrap = document.createElement('div');
+      wrap.className = 'img-wrap';
+      const img = document.createElement('img');
+      img.src = '../../raw/preview/' + path;
+      img.alt = getFilename(path);
+      wrap.appendChild(img);
+      content.innerHTML = '';
+      content.appendChild(wrap);
+
+    } else if (data.type === 'html') {
+      const wrap = document.createElement('div');
+      wrap.className = 'html-wrap';
+      const iframe = document.createElement('iframe');
+      iframe.src = '../../raw/preview/' + path;
+      iframe.style.cssText = 'width:100%;border:none;background:#fff;border-radius:8px;';
+      // Auto-resize iframe height to content
+      iframe.onload = () => {
+        try {
+          iframe.style.height = iframe.contentDocument.documentElement.scrollHeight + 'px';
+        } catch(e) {
+          iframe.style.height = '80vh';
+        }
+      };
+      iframe.style.height = '80vh';
+      wrap.appendChild(iframe);
+      content.innerHTML = '';
+      content.appendChild(wrap);
+
+    } else if (data.type === 'jsonl') {
+      renderJsonl(data, content);
+
+    } else if (data.type === 'drawio') {
+      document.getElementById('app').classList.add('drawio-mode');
+      initDrawio(data.content, path, content);
+    }
+
+  } catch (e) {
+    content.innerHTML = `<div class="state-msg"><div class="icon">❌</div>${e.message}</div>`;
+  }
+}
+
+function renderJsonl(data, container) {
+  container.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'jsonl-wrap';
+
+  if (data.truncated) {
+    const banner = document.createElement('div');
+    banner.className = 'jsonl-banner';
+    banner.textContent = `已截断（共 ${data.total} 行，显示前 ${data.records.length} 行）`;
+    wrap.appendChild(banner);
+  }
+
+  for (const rec of data.records) {
+    const row = document.createElement('div');
+    row.className = 'jsonl-row' + (rec.ok ? '' : ' jsonl-error');
+
+    const num = document.createElement('span');
+    num.className = 'jsonl-lineno';
+    num.textContent = rec.line;
+    row.appendChild(num);
+
+    const pre = document.createElement('pre');
+    const code = document.createElement('code');
+    if (rec.ok) {
+      code.className = 'language-json';
+      code.textContent = JSON.stringify(rec.json, null, 2);
+    } else {
+      const err = document.createElement('div');
+      err.className = 'jsonl-error-tag';
+      err.textContent = 'parse error';
+      row.appendChild(err);
+      code.className = 'language-plaintext';
+      code.textContent = rec.raw;
+    }
+    pre.appendChild(code);
+    row.appendChild(pre);
+    wrap.appendChild(row);
+  }
+
+  container.appendChild(wrap);
+  wrap.querySelectorAll('pre code.language-json').forEach(b => hljs.highlightElement(b));
+}
+
+function initDrawio(xml, filePath, container) {
+  container.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'drawio-wrap';
+
+  const iframe = document.createElement('iframe');
+  iframe.id = 'drawio-editor';
+  iframe.style.cssText = 'width:100%;height:85vh;border:none;border-radius:8px;background:#fff;';
+  const dark = getTheme() === 'dark' ? '1' : '0';
+  iframe.src = 'https://embed.diagrams.net/?embed=1&proto=json&spin=1&dark=' + dark;
+  wrap.appendChild(iframe);
+  container.appendChild(wrap);
+
+  window.addEventListener('message', function handler(evt) {
+    if (evt.origin !== 'https://embed.diagrams.net') return;
+    let msg;
+    try { msg = JSON.parse(evt.data); } catch(e) { return; }
+
+    if (msg.event === 'init') {
+      iframe.contentWindow.postMessage(JSON.stringify({
+        action: 'load',
+        xml: xml,
+        autosave: 0
+      }), '*');
+    } else if (msg.event === 'save') {
+      // Save back to server
+      fetch('../../api/preview/save', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ path: filePath, content: msg.xml })
+      }).then(r => {
+        if (r.ok) {
+          // Tell drawio save is done, keep editing
+          iframe.contentWindow.postMessage(JSON.stringify({
+            action: 'status', message: 'Saved', modified: false
+          }), '*');
+        }
+      });
+    } else if (msg.event === 'exit') {
+      window.removeEventListener('message', handler);
+      const dir = getDir(filePath);
+      location.href = dir ? `${PREVIEW_INDEX}?path=${encodeURIComponent(dir)}` : PREVIEW_INDEX;
+    }
+  });
+}
+
+load();
+</script>
+</body>
+</html>

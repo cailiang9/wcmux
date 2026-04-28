@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>File Preview</title>
+  <link rel="stylesheet" href="style.css">
+  <script>
+    (function() {
+      var t = localStorage.getItem('theme') || 'dark';
+      if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    })();
+  </script>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <div class="logo">File<span>Preview</span></div>
+    <div style="flex:1"></div>
+    <button class="theme-toggle" id="theme-toggle" title="切换主题"></button>
+  </div>
+  <div class="breadcrumb" id="breadcrumb"></div>
+  <div id="content"><div class="state-msg"><div class="icon">⏳</div>Loading...</div></div>
+</div>
+
+<script>
+// Theme toggle
+function getTheme() { return localStorage.getItem('theme') || 'dark'; }
+function applyTheme(theme) {
+  if (theme === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
+  document.getElementById('theme-toggle').textContent = theme === 'light' ? '\u{1F319}' : '\u{2600}\u{FE0F}';
+}
+applyTheme(getTheme());
+document.getElementById('theme-toggle').addEventListener('click', () => {
+  const next = getTheme() === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('theme', next);
+  applyTheme(next);
+});
+
+const ICONS = {
+  dir:      '📁',
+  image:    '🖼️',
+  markdown: '📝',
+  code:     '💻',
+  text:     '📄',
+  unknown:  '❓',
+};
+
+function getQuery() {
+  const params = new URLSearchParams(location.search);
+  return params.get('path') || '';
+}
+
+function setQuery(path) {
+  const url = new URL(location.href);
+  if (path) url.searchParams.set('path', path);
+  else url.searchParams.delete('path');
+  history.pushState({}, '', url);
+}
+
+function navigate(path, isDir) {
+  if (isDir) {
+    setQuery(path);
+    loadDir(path);
+  } else {
+    location.href = 'preview.html?path=' + encodeURIComponent(path);
+  }
+}
+
+function renderBreadcrumb(parts) {
+  const el = document.getElementById('breadcrumb');
+  let html = `<a href="?" onclick="navigate('',true);return false;">🏠 ~</a>`;
+  parts.forEach((p, i) => {
+    html += `<span class="sep"> / </span>`;
+    if (i === parts.length - 1) {
+      html += `<span>${p.name}</span>`;
+    } else {
+      html += `<a href="?path=${encodeURIComponent(p.path)}" onclick="navigate('${p.path}',true);return false;">${p.name}</a>`;
+    }
+  });
+  el.innerHTML = html;
+}
+
+async function loadDir(path) {
+  const content = document.getElementById('content');
+  content.innerHTML = '<div class="state-msg"><div class="icon">⏳</div>Loading...</div>';
+
+  try {
+    const res = await fetch('../../api/preview/list?path=' + encodeURIComponent(path));
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+
+    renderBreadcrumb(data.breadcrumb);
+
+    if (data.items.length === 0) {
+      content.innerHTML = '<div class="empty">目录为空</div>';
+      return;
+    }
+
+    const cards = data.items.map(item => {
+      const icon = ICONS[item.kind] || ICONS.unknown;
+      const onclick = item.kind === 'dir'
+        ? `navigate('${item.path.replace(/'/g,"\\'")}', true)`
+        : `navigate('${item.path.replace(/'/g,"\\'")}', false)`;
+      return `
+        <div class="card kind-${item.kind}" onclick="${onclick}">
+          <div class="card-icon">${icon}</div>
+          <div class="card-name" title="${item.name}">${item.name}</div>
+          <div class="card-meta">
+            ${item.size ? `<span class="card-size">${item.size}</span>` : ''}
+            <span class="card-mtime">${item.mtime}</span>
+          </div>
+        </div>`;
+    }).join('');
+
+    content.innerHTML = `<div class="grid">${cards}</div>`;
+  } catch (e) {
+    content.innerHTML = `<div class="state-msg"><div class="icon">❌</div>${e.message}</div>`;
+  }
+}
+
+window.addEventListener('popstate', () => loadDir(getQuery()));
+loadDir(getQuery());
+</script>
+</body>
+</html>

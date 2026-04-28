@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -15,6 +16,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .auth import LockoutRegistry, build_auth_router, require_auth
 from .config import Config
 from .devices import DeviceRegistry
+from .preview import router as preview_router
 from .sessions import (
     SessionRegistry,
     cwd_is_valid,
@@ -44,6 +46,10 @@ def create_app(config: Config) -> FastAPI:
     app.state.lockout = LockoutRegistry()
     app.state.registry = SessionRegistry(shell=config.shell)
     app.state.devices = DeviceRegistry()
+    # spec §4.22: where the file-preview sub-router roots its filesystem view.
+    _preview_root_env = os.environ.get("WCMUX_PREVIEW_ROOT", "")
+    app.state.preview_root = (Path(_preview_root_env).expanduser().resolve()
+                              if _preview_root_env else Path.home().resolve())
 
     app.add_middleware(
         SessionMiddleware,
@@ -65,6 +71,7 @@ def create_app(config: Config) -> FastAPI:
     app.state.on_logout = None
 
     app.include_router(build_auth_router(templates))
+    app.include_router(preview_router)
 
     @app.on_event("startup")
     async def _startup() -> None:

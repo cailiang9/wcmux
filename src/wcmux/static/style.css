@@ -45,6 +45,31 @@ html, body { margin: 0; padding: 0; height: 100%; background: #0c0c0c; color: #d
            width: 28px; height: 24px; border-radius: 3px; cursor: pointer; font-size: 1rem; }
 #new-tab:hover { background: #2a2a2a; }
 #new-tab:disabled { opacity: .4; cursor: not-allowed; }
+/* Spec §4.22: preview-file search box + dropdown. */
+#preview-search { background: #1a1a1a; color: #ddd; border: 1px solid #333;
+                  border-radius: 3px; padding: 3px 8px; font-size: .85rem;
+                  flex: 0 1 200px; min-width: 80px; outline: none; }
+#preview-search::placeholder { color: #666; }
+#preview-search:focus { border-color: #3a5f86; }
+#preview-results { position: absolute; top: 36px; z-index: 30;
+                   background: #1a1a1a; color: #ddd; border: 1px solid #333;
+                   border-radius: 4px; box-shadow: 0 6px 24px rgba(0,0,0,.5);
+                   min-width: 280px; max-width: min(560px, 90vw); max-height: 60vh;
+                   overflow-y: auto; padding: 4px; font-size: .9rem; }
+#preview-results[hidden] { display: none; }
+.pv-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+           cursor: pointer; border-radius: 3px; white-space: nowrap;
+           overflow: hidden; }
+.pv-item:hover, .pv-item.active { background: #2d4a6a; color: #fff; }
+.pv-item .pv-icon { flex: 0 0 auto; width: 18px; text-align: center; }
+.pv-item .pv-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+.pv-item .pv-meta { color: #8aa; font-size: .8rem; margin-left: auto;
+                    overflow: hidden; text-overflow: ellipsis; flex-shrink: 1; }
+.pv-empty { padding: 8px 10px; color: #888; font-style: italic; }
+@media (max-width: 600px) {
+  #preview-search { flex: 1 1 auto; min-width: 0; }
+  #preview-results { left: 4px; right: 4px; max-width: none; }
+}
 #status { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
           background: #555; margin: 0 4px; flex: 0 0 auto;
           box-shadow: 0 0 4px rgba(0,0,0,.4); transition: background 150ms; }

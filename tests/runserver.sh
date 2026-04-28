@@ -23,6 +23,10 @@ export WCMUX_PASSWORD="${WCMUX_PASSWORD:-pw}"
 # Per-run device token registry — never touch the real ~/.local/share/wcmux.
 export WCMUX_DEVICES_FILE="${WCMUX_DEVICES_FILE:-/tmp/wcmux-test-devices.json}"
 rm -f "$WCMUX_DEVICES_FILE" 2>/dev/null || true
+# Per-run preview root (spec §4.22) — isolate filesystem view from $HOME.
+export WCMUX_PREVIEW_ROOT="${WCMUX_PREVIEW_ROOT:-/tmp/wcmux-test-preview}"
+rm -rf "$WCMUX_PREVIEW_ROOT" 2>/dev/null || true
+mkdir -p "$WCMUX_PREVIEW_ROOT"
 
 unset http_proxy https_proxy
 

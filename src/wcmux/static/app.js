@@ -529,6 +529,127 @@
     }
   }
 
+  // Spec §4.22: file-preview search box. Debounced fetch to /api/preview/search,
+  // dropdown of name+path matches, click/Enter opens preview.html in a new
+  // window. The window.open call sits inside the click/keydown user gesture so
+  // popup blockers stay quiet.
+  const previewSearchEl = document.getElementById("preview-search");
+  const previewResultsEl = document.getElementById("preview-results");
+  let _previewDebounce = null;
+  let _previewActiveIdx = -1;
+  const PV_ICONS = {
+    image: "🖼️", markdown: "📝", code: "💻", text: "📄",
+    html: "🌐", drawio: "📐", jsonl: "📊", unknown: "❓",
+  };
+
+  function closePreviewResults() {
+    if (!previewResultsEl) return;
+    previewResultsEl.hidden = true;
+    previewResultsEl.innerHTML = "";
+    _previewActiveIdx = -1;
+  }
+  function openPreviewURL(relPath) {
+    const url = BASE + "/static/preview/preview.html?path=" + encodeURIComponent(relPath);
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+  function highlightPreviewActive() {
+    const items = previewResultsEl.querySelectorAll(".pv-item");
+    items.forEach((el, i) => el.classList.toggle("active", i === _previewActiveIdx));
+    const cur = items[_previewActiveIdx];
+    if (cur) cur.scrollIntoView({ block: "nearest" });
+  }
+  async function runPreviewSearch(q) {
+    if (!q || !q.trim()) { closePreviewResults(); return; }
+    let data;
+    try {
+      data = await api("GET",
+        "/api/preview/search?q=" + encodeURIComponent(q.trim()),
+        undefined, { noWorkspace: true });
+    } catch { return; }
+    const results = (data && data.results) || [];
+    previewResultsEl.innerHTML = "";
+    _previewActiveIdx = -1;
+    if (results.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "pv-empty";
+      empty.textContent = "无匹配文件";
+      previewResultsEl.appendChild(empty);
+    } else {
+      results.forEach((r, i) => {
+        const item = document.createElement("div");
+        item.className = "pv-item";
+        item.dataset.path = r.path;
+        const icon = document.createElement("span");
+        icon.className = "pv-icon";
+        icon.textContent = PV_ICONS[r.type] || PV_ICONS.unknown;
+        const name = document.createElement("span");
+        name.className = "pv-name";
+        name.textContent = r.name;
+        const meta = document.createElement("span");
+        meta.className = "pv-meta";
+        meta.textContent = r.path + (r.size ? "  ·  " + r.size : "");
+        item.append(icon, name, meta);
+        item.addEventListener("click", () => {
+          openPreviewURL(r.path);
+          closePreviewResults();
+          previewSearchEl.value = "";
+        });
+        item.addEventListener("mouseenter", () => {
+          _previewActiveIdx = i;
+          highlightPreviewActive();
+        });
+        previewResultsEl.appendChild(item);
+      });
+    }
+    if (window.innerWidth > 600) {
+      const rect = previewSearchEl.getBoundingClientRect();
+      previewResultsEl.style.left = rect.left + "px";
+    } else {
+      previewResultsEl.style.left = "";
+    }
+    previewResultsEl.hidden = false;
+  }
+  if (previewSearchEl && previewResultsEl) {
+    previewSearchEl.addEventListener("input", (e) => {
+      const v = e.target.value;
+      if (_previewDebounce) clearTimeout(_previewDebounce);
+      _previewDebounce = setTimeout(() => runPreviewSearch(v), 250);
+    });
+    previewSearchEl.addEventListener("focus", () => {
+      if (previewSearchEl.value.trim()) runPreviewSearch(previewSearchEl.value);
+    });
+    previewSearchEl.addEventListener("keydown", (e) => {
+      const items = previewResultsEl.querySelectorAll(".pv-item");
+      if (e.key === "Escape") {
+        closePreviewResults(); previewSearchEl.blur(); return;
+      }
+      if (!items.length) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        _previewActiveIdx = _previewActiveIdx < 0 ? 0
+          : Math.min(_previewActiveIdx + 1, items.length - 1);
+        highlightPreviewActive();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        _previewActiveIdx = Math.max(_previewActiveIdx - 1, 0);
+        highlightPreviewActive();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const cur = items[_previewActiveIdx >= 0 ? _previewActiveIdx : 0];
+        if (cur && cur.dataset.path) {
+          openPreviewURL(cur.dataset.path);
+          closePreviewResults();
+          previewSearchEl.value = "";
+        }
+      }
+    });
+    document.addEventListener("click", (e) => {
+      if (previewResultsEl.hidden) return;
+      if (previewResultsEl.contains(e.target) || previewSearchEl.contains(e.target)) return;
+      closePreviewResults();
+    });
+  }
+
   // Spec §4.7: "?" button opens the shortcut reference
   const helpBtn = document.getElementById("help-btn");
   const helpDlg = document.getElementById("help-dialog");
@@ -692,6 +813,25 @@
       renderTabMenu();
     });
     tabMenu.appendChild(dev);
+
+    // Footer: logout (spec §4.22 — moved out of toolbar to free space for the
+    // preview-search box). Uses POST so we don't break CSRF assumptions.
+    const sep2 = document.createElement("div");
+    sep2.className = "tab-menu-sep";
+    tabMenu.appendChild(sep2);
+    const out = document.createElement("div");
+    out.className = "tab-menu-item tab-menu-action";
+    out.setAttribute("role", "menuitem");
+    out.title = "Sign out and clear the session cookie";
+    out.textContent = "logout";
+    out.addEventListener("click", async () => {
+      try {
+        await fetch(BASE + "/logout",
+                    { method: "POST", credentials: "same-origin" });
+      } catch {}
+      window.location.href = BASE + "/login";
+    });
+    tabMenu.appendChild(out);
   }
   function openTabMenu() {
     if (!tabMenu) return;
