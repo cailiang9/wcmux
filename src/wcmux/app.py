@@ -47,9 +47,30 @@ def create_app(config: Config) -> FastAPI:
     app.state.registry = SessionRegistry(shell=config.shell)
     app.state.devices = DeviceRegistry()
     # spec §4.22: where the file-preview sub-router roots its filesystem view.
-    _preview_root_env = os.environ.get("WCMUX_PREVIEW_ROOT", "")
-    app.state.preview_root = (Path(_preview_root_env).expanduser().resolve()
-                              if _preview_root_env else Path.home().resolve())
+    # `WCMUX_PREVIEW_ROOT` is the primary root (relative paths anchor here).
+    # `WCMUX_PREVIEW_EXTRA_ROOTS` is a colon-separated list of additional
+    # absolute trees the user wants reachable (mounted USB drives, NAS, etc.);
+    # absolute path= queries are accepted iff they fall under one of these.
+    _primary_env = os.environ.get("WCMUX_PREVIEW_ROOT", "")
+    _primary = (Path(_primary_env).expanduser().resolve()
+                if _primary_env else Path.home().resolve())
+    app.state.preview_root = _primary
+    _extras_env = os.environ.get("WCMUX_PREVIEW_EXTRA_ROOTS", "")
+    _extra_paths: list[Path] = []
+    seen = {_primary}
+    for raw in _extras_env.split(":"):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            p = Path(raw).expanduser().resolve()
+        except (OSError, RuntimeError):
+            continue
+        if p in seen:
+            continue
+        seen.add(p)
+        _extra_paths.append(p)
+    app.state.preview_roots = [_primary, *_extra_paths]
 
     app.add_middleware(
         SessionMiddleware,

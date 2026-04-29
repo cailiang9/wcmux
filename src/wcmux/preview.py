@@ -85,21 +85,50 @@ def format_time(ts: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
 
 
-def _preview_root(request: Request) -> Path:
-    return request.app.state.preview_root
+def _preview_roots(request: Request) -> list[Path]:
+    return getattr(request.app.state, "preview_roots", [request.app.state.preview_root])
 
 
-def resolve_path(root: Path, rel: str) -> Path:
-    """Map a URL-rel path to a filesystem path under PREVIEW_ROOT.
-    Reject attempts to escape via .. before any resolve() (which would follow
-    symlinks and lose the boundary). Symlinks pointing outside root from
-    inside root are trusted (mdpreview policy)."""
-    joined = root / rel.lstrip("/")
-    try:
-        joined.relative_to(root)
-    except ValueError:
+def _under_any(p: Path, roots: list[Path]) -> Path | None:
+    """Return the first root that contains `p` (lexically, before resolve), or
+    None. Used to gate URL→FS mapping."""
+    for r in roots:
+        try:
+            p.relative_to(r)
+            return r
+        except ValueError:
+            continue
+    return None
+
+
+def resolve_path(roots: list[Path], rel: str) -> Path:
+    """Map a URL `path` to a filesystem path. The URL form is one of:
+      - relative (e.g. ``foo/bar.md``): anchored to the primary root (roots[0]).
+      - absolute (e.g. ``/media/orangepi/foo.png``): accepted iff lexically under
+        any of `roots`; lets users address mounted-elsewhere extra roots.
+
+    `..` traversal is rejected (the unresolved candidate must be lexically under
+    some root). Symlinks under a root are trusted (mdpreview policy) so the
+    final returned path is `joined.resolve()`."""
+    if rel.startswith("/"):
+        joined = Path(rel)
+    else:
+        joined = roots[0] / rel
+    if _under_any(joined, roots) is None:
         raise HTTPException(status_code=403, detail="Access denied")
     return joined.resolve()
+
+
+def to_url_path(p: Path, roots: list[Path]) -> str:
+    """Map a filesystem path back into the form accepted by `resolve_path`.
+    Files under the primary root are rendered relative (shorter URLs, common
+    case); files under an extra root come back absolute."""
+    primary = roots[0]
+    try:
+        return str(p.relative_to(primary)).replace(os.sep, "/")
+    except ValueError:
+        # absolute path; preserve the leading slash (str(Path('/a/b')) == '/a/b')
+        return str(p).replace(os.sep, "/")
 
 
 # ---- router ----
@@ -111,14 +140,23 @@ router = APIRouter()
 def api_list(request: Request,
              path: str = Query(default=""),
              _=Depends(require_auth)) -> JSONResponse:
-    root = _preview_root(request)
-    target = resolve_path(root, path)
+    roots = _preview_roots(request)
+    if path == "":
+        target = roots[0]
+        # logical base used to compute item paths; for the empty (primary root)
+        # case this matches resolve_path("") behavior.
+        logical_base = roots[0]
+    else:
+        target = resolve_path(roots, path)
+        # logical_base mirrors resolve_path's joining rule but pre-resolve, so
+        # entries under symlinked roots get URL paths relative to the URL root,
+        # not the symlink target.
+        logical_base = (Path(path) if path.startswith("/")
+                        else roots[0] / path.lstrip("/"))
     if not target.exists():
         raise HTTPException(status_code=404, detail="Not found")
     if not target.is_dir():
         raise HTTPException(status_code=400, detail="Not a directory")
-
-    logical_base = root / path.lstrip("/") if path else root
 
     items = []
     try:
@@ -134,13 +172,12 @@ def api_list(request: Request,
             st = entry.stat()
         except OSError:
             continue
-        rel = (logical_base / name).relative_to(root)
-        rel_str = str(rel).replace(os.sep, "/")
+        url_path = to_url_path(logical_base / name, roots)
         if entry.is_dir():
             items.append({
                 "kind": "dir",
                 "name": name,
-                "path": rel_str,
+                "path": url_path,
                 "mtime": format_time(st.st_mtime),
                 "_sort": (0, name.lower()),
             })
@@ -151,7 +188,7 @@ def api_list(request: Request,
             items.append({
                 "kind": ftype,
                 "name": name,
-                "path": rel_str,
+                "path": url_path,
                 "size": format_size(st.st_size),
                 "mtime": format_time(st.st_mtime),
                 "_sort": (1, name.lower()),
@@ -161,13 +198,19 @@ def api_list(request: Request,
     for it in items:
         it.pop("_sort", None)
 
+    # Breadcrumb: walk segments while keeping the absolute-or-relative form
+    # consistent with how `path` came in, so link clicks round-trip cleanly.
     breadcrumb = []
     if path:
-        parts = path.strip("/").split("/")
+        is_abs = path.startswith("/")
+        segs = path.strip("/").split("/")
         accum = ""
-        for p in parts:
-            accum = f"{accum}/{p}" if accum else p
-            breadcrumb.append({"name": p, "path": accum})
+        for seg in segs:
+            accum = f"{accum}/{seg}" if accum else seg
+            breadcrumb.append({
+                "name": seg,
+                "path": ("/" + accum) if is_abs else accum,
+            })
 
     return JSONResponse({"breadcrumb": breadcrumb, "items": items})
 
@@ -176,8 +219,8 @@ def api_list(request: Request,
 def api_file(request: Request,
              path: str = Query(...),
              _=Depends(require_auth)) -> JSONResponse:
-    root = _preview_root(request)
-    target = resolve_path(root, path)
+    roots = _preview_roots(request)
+    target = resolve_path(roots, path)
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -241,7 +284,7 @@ def api_file(request: Request,
 
 @router.post("/api/preview/save")
 async def api_save(request: Request, _=Depends(require_auth)) -> JSONResponse:
-    root = _preview_root(request)
+    roots = _preview_roots(request)
     try:
         body = await request.json()
     except Exception:
@@ -250,7 +293,7 @@ async def api_save(request: Request, _=Depends(require_auth)) -> JSONResponse:
     content = (body or {}).get("content", "")
     if not path or not isinstance(path, str):
         raise HTTPException(status_code=400, detail="Missing path")
-    target = resolve_path(root, path)
+    target = resolve_path(roots, path)
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="Not found")
     ftype = file_type(target)
@@ -268,16 +311,25 @@ def api_search(request: Request,
                q: str = Query(default=""),
                limit: int = Query(default=50, ge=1, le=200),
                _=Depends(require_auth)) -> JSONResponse:
-    """Spec §4.22: name substring search across PREVIEW_ROOT, capped at
-    SEARCH_MAX_DEPTH levels of nested dirs, skipping hidden + deny-listed.
-    Matches both directory names (type='dir') and file names (type=<ftype>).
-    Empty q returns []."""
+    """Spec §4.22: name substring search across the primary root and all
+    extra roots, each capped at SEARCH_MAX_DEPTH levels of nested dirs,
+    skipping hidden + deny-listed. Matches both directory names (type='dir')
+    and file names (type=<ftype>). Empty q returns []."""
     if not q:
         return JSONResponse({"results": []})
-    root = _preview_root(request)
+    roots = _preview_roots(request)
     q_lower = q.lower()
     out: list[dict] = []
 
+    for root in roots:
+        out.extend(_search_in_root(root, roots, q_lower))
+
+    out.sort(key=lambda r: r["mtime"], reverse=True)
+    return JSONResponse({"results": out[:limit]})
+
+
+def _search_in_root(root: Path, roots: list[Path], q_lower: str) -> list[dict]:
+    out: list[dict] = []
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         try:
             rel = Path(dirpath).relative_to(root)
@@ -302,9 +354,8 @@ def api_search(request: Request,
                         st = p.stat()
                     except OSError:
                         continue
-                    rel_path = str(p.relative_to(root)).replace(os.sep, "/")
                     out.append({
-                        "path": rel_path,
+                        "path": to_url_path(p, roots),
                         "name": d,
                         "type": "dir",
                         "size": "",
@@ -328,29 +379,29 @@ def api_search(request: Request,
                 st = p.stat()
             except OSError:
                 continue
-            rel_path = str(p.relative_to(root)).replace(os.sep, "/")
             out.append({
-                "path": rel_path,
+                "path": to_url_path(p, roots),
                 "name": fname,
                 "type": ftype,
                 "size": format_size(st.st_size),
                 "mtime": st.st_mtime,
                 "mtime_display": format_time(st.st_mtime),
             })
-
-    out.sort(key=lambda r: r["mtime"], reverse=True)
-    return JSONResponse({"results": out[:limit]})
+    return out
 
 
-@router.get("/raw/preview/{full_path:path}")
+@router.get("/raw/preview")
 def raw_file(request: Request,
-             full_path: str,
+             path: str = Query(...),
              _=Depends(require_auth)) -> FileResponse:
-    """Serve image / html / drawio / jsonl / etc. raw; used by preview.html
-    for <img src> and <iframe src>. Refuses unsupported types so we don't
-    accidentally turn into a generic file server."""
-    root = _preview_root(request)
-    target = resolve_path(root, full_path)
+    """Serve image / html / drawio / jsonl / etc. raw bytes; used by
+    preview.html for <img src> and <iframe src>. Path is a query param (rather
+    than a URL segment) so absolute paths under extra roots survive HTTP path
+    normalization (a leading `/` collapsed to `//` would otherwise vanish).
+    Refuses unsupported types so we don't accidentally turn into a generic
+    file server."""
+    roots = _preview_roots(request)
+    target = resolve_path(roots, path)
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404)
     ftype = file_type(target)

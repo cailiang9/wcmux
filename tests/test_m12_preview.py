@@ -100,7 +100,7 @@ def main() -> int:
     code, body = c_anon.request("GET", "/api/preview/list")
     results.append(("list unauth -> 401", code == 401, f"got {code}"))
 
-    code, body = c_anon.request("GET", "/raw/preview/alpha.md")
+    code, body = c_anon.request("GET", "/raw/preview?path=alpha.md")
     results.append(("raw unauth -> 401 or 307", code in (401, 307), f"got {code}"))
 
     # 2) Login
@@ -214,10 +214,45 @@ def main() -> int:
     results.append(("traversal -> 403 or 404",
                     code in (403, 404), f"got {code}"))
 
-    # 11) raw on a recognized file
-    code, body = c.request("GET", "/raw/preview/alpha.md")
+    # 11) raw on a recognized file (query-param form)
+    code, body = c.request("GET", "/raw/preview?path=alpha.md")
     results.append(("raw alpha.md -> 200",
                     code == 200, f"got {code}"))
+
+    # 11b) Extra root (spec §4.22 multi-root). Drop a file under the extra
+    # root (configured via WCMUX_PREVIEW_EXTRA_ROOTS in runserver.sh) and
+    # verify search picks it up + absolute path round-trips through file/raw.
+    extra_env = os.environ.get("WCMUX_PREVIEW_EXTRA_ROOTS", "")
+    extra_root_str = extra_env.split(":")[0] if extra_env else ""
+    if extra_root_str:
+        extra_root = Path(extra_root_str)
+        extra_root.mkdir(parents=True, exist_ok=True)
+        (extra_root / "ext-note.md").write_text("# extra", encoding="utf-8")
+        # search hits it
+        code, body = c.request(
+            "GET", f"/api/preview/search?q=ext-note")
+        payload = json.loads(body)
+        rows = payload.get("results", [])
+        ext_path = f"{extra_root}/ext-note.md"
+        results.append(("search finds extra-root file w/ absolute path",
+                        any(r["path"] == ext_path for r in rows),
+                        f"rows={rows}"))
+        # file API accepts absolute path
+        ep = urllib.parse.quote(ext_path, safe="")
+        code, body = c.request("GET", f"/api/preview/file?path={ep}")
+        payload = json.loads(body) if body else {}
+        results.append(("file API serves absolute path under extra root",
+                        code == 200 and payload.get("type") == "markdown",
+                        f"code={code} body={body[:120]!r}"))
+        # raw API accepts absolute path
+        code, _ = c.request("GET", f"/raw/preview?path={ep}")
+        results.append(("raw API serves absolute path under extra root",
+                        code == 200, f"got {code}"))
+        # absolute path NOT under any root -> 403
+        bad = urllib.parse.quote("/etc/passwd", safe="")
+        code, _ = c.request("GET", f"/api/preview/file?path={bad}")
+        results.append(("absolute path outside roots -> 403",
+                        code == 403, f"got {code}"))
 
     # 12) save: only drawio allowed (markdown gets 403)
     code, body = c.request("POST", "/api/preview/save",

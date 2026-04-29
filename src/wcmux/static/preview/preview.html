@@ -163,7 +163,7 @@ async function load() {
       const wrap = document.createElement('div');
       wrap.className = 'img-wrap';
       const img = document.createElement('img');
-      img.src = '../../raw/preview/' + path;
+      img.src = '../../raw/preview?path=' + encodeURIComponent(path);
       img.alt = getFilename(path);
       wrap.appendChild(img);
       content.innerHTML = '';
@@ -173,7 +173,7 @@ async function load() {
       const wrap = document.createElement('div');
       wrap.className = 'html-wrap';
       const iframe = document.createElement('iframe');
-      iframe.src = '../../raw/preview/' + path;
+      iframe.src = '../../raw/preview?path=' + encodeURIComponent(path);
       iframe.style.cssText = 'width:100%;border:none;background:#fff;border-radius:8px;';
       // Auto-resize iframe height to content
       iframe.onload = () => {

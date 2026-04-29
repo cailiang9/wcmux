@@ -27,6 +27,12 @@ rm -f "$WCMUX_DEVICES_FILE" 2>/dev/null || true
 export WCMUX_PREVIEW_ROOT="${WCMUX_PREVIEW_ROOT:-/tmp/wcmux-test-preview}"
 rm -rf "$WCMUX_PREVIEW_ROOT" 2>/dev/null || true
 mkdir -p "$WCMUX_PREVIEW_ROOT"
+# Extra root for §4.22 multi-root tests.
+export WCMUX_PREVIEW_EXTRA_ROOTS="${WCMUX_PREVIEW_EXTRA_ROOTS:-/tmp/wcmux-test-extra}"
+for er in $(echo "$WCMUX_PREVIEW_EXTRA_ROOTS" | tr ':' ' '); do
+  rm -rf "$er" 2>/dev/null || true
+  mkdir -p "$er"
+done
 
 unset http_proxy https_proxy
 
