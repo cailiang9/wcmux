@@ -112,6 +112,20 @@ def main() -> int:
     results.append(("URL shape /share/<date>/<slug>-<id12>",
                     bool(m), f"path={parts}"))
 
+    # 3b) Table-wrapping: a markdown with a table should render with each
+    # <table> wrapped in <div class="md-table-scroll"> (spec §4.23).
+    (root / "tabular.md").write_text(
+        "| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |\n", encoding="utf-8")
+    code, _, body = c.request("POST", "/api/share",
+                              json_body={"path": "tabular.md"})
+    tab_url = json.loads(body).get("url", "")
+    pub2 = Client(BASE)
+    code, _, raw = pub2.request("GET", urlparse(tab_url).path)
+    body_text = raw.decode("utf-8", errors="replace")
+    results.append(("table wrapped in md-table-scroll",
+                    'class="md-table-scroll"' in body_text and "<table>" in body_text,
+                    f"head={body_text[body_text.find('md-table-scroll')-20:body_text.find('md-table-scroll')+220]!r}"))
+
     # 4) assets included diagram, NOT external, NOT leak
     inc = payload.get("assets_included", [])
     skipped = payload.get("assets_skipped", [])

@@ -10,9 +10,15 @@
                  cursor: pointer; padding: 4px 10px; border-radius: 3px;
                  font-size: .85em; margin-right: 6px; }
     .share-btn:hover { background: rgba(125,125,125,.1); }
-    .share-dialog { width: min(520px, 92vw); border: 1px solid #444;
-                    border-radius: 6px; padding: 18px 20px; background: #1d1d1d;
-                    color: #ddd; }
+    /* Spec §4.23: dialog must be viewport-centered AND not exceed page width.
+       Native <dialog> centers via `inset: 0; margin: auto` when opened with
+       showModal(); we set both explicitly for older browsers. */
+    .share-dialog { width: min(520px, 92vw); max-width: 92vw;
+                    max-height: 90vh; box-sizing: border-box;
+                    inset: 0; margin: auto;
+                    border: 1px solid #444; border-radius: 6px;
+                    padding: 18px 20px; background: #1d1d1d; color: #ddd;
+                    overflow: auto; }
     .share-dialog::backdrop { background: rgba(0,0,0,.55); }
     [data-theme="light"] .share-dialog { background: #fff; color: #222;
                                          border-color: #ccc; }
@@ -31,9 +37,15 @@
                                   border: 1px solid #3a5f86; }
     .share-dialog #share-revoke { background: #6a2d2d; color: #fff;
                                   border: 1px solid #863a3a; }
-    .share-url-wrap { display: flex; gap: 6px; flex: 1 1 auto; }
-    .share-url-wrap input { font-family: ui-monospace, Menlo, monospace; font-size: .85em; }
-    .share-skipped { color: #c80; font-size: .85em; flex-basis: 100%; }
+    .share-url-wrap { display: flex; gap: 6px; flex: 1 1 100%; min-width: 0; }
+    /* min-width: 0 lets the input shrink below its content size inside flex,
+       so a long URL scrolls within the field instead of pushing the dialog
+       past 92vw. */
+    .share-url-wrap input { min-width: 0;
+                            font-family: ui-monospace, Menlo, monospace;
+                            font-size: .85em; }
+    .share-skipped { color: #c80; font-size: .85em; flex-basis: 100%;
+                     overflow-wrap: anywhere; word-break: break-word; }
   </style>
   <!-- highlight.js via CDN -->
   <link id="hljs-theme" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">

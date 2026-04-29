@@ -332,7 +332,11 @@ def _render_share_body(share: dict, src: Path, ftype: str,
                         "sane_lists", "attr_list"],
         )
         # Code fences inside markdown: pygments highlight.
-        return f'<div class="md">{_highlight_code_blocks(rendered)}</div>'
+        rendered = _highlight_code_blocks(rendered)
+        # spec §4.23: wrap each <table> so it scrolls horizontally on its
+        # own without forcing the whole page to scroll on narrow viewports.
+        rendered = _wrap_tables(rendered)
+        return f'<div class="md">{rendered}</div>'
 
     if ftype == "code":
         text = src.read_text(encoding="utf-8", errors="replace")
@@ -446,6 +450,15 @@ def _pygments_highlight(text: str, lang: str) -> str:
     return highlight(text, _pygments_get_lexer(lang), _pygments_formatter)
 
 
+def _wrap_tables(html_body: str) -> str:
+    """Wrap each <table>...</table> in `<div class="md-table-scroll">` so wide
+    tables get their own horizontal scrollbar instead of overflowing the page.
+    Idempotent for tables already wrapped."""
+    import re
+    pat = re.compile(r"(<table\b[^>]*>.*?</table>)", re.DOTALL | re.IGNORECASE)
+    return pat.sub(r'<div class="md-table-scroll">\1</div>', html_body)
+
+
 def _highlight_code_blocks(html_body: str) -> str:
     """Pygments-highlight the <pre><code class="language-X"> blocks markdown
     emits via fenced_code. Anything we don't recognize stays as-is."""
@@ -492,6 +505,9 @@ def _share_page_css() -> str:
                font-size: .92em; }
     .md pre { padding: 12px 14px; border-radius: 6px; overflow-x: auto; }
     .md img { max-width: 100%; height: auto; border-radius: 4px; }
+    .md-table-scroll { overflow-x: auto; max-width: 100%;
+                       margin: 12px 0; -webkit-overflow-scrolling: touch; }
+    .md-table-scroll table { margin: 0; }
     .md table { border-collapse: collapse; }
     .md th, .md td { border: 1px solid #ddd; padding: 6px 10px; }
     pre.text { background: #fff; padding: 14px 16px; border: 1px solid #eee;
