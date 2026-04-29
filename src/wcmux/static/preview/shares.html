@@ -5,37 +5,69 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>我的分享 · wcmux</title>
   <link rel="stylesheet" href="style.css">
+  <script>
+    // Apply saved theme immediately to avoid flash; default to LIGHT.
+    (function() {
+      var t = localStorage.getItem('theme') || 'light';
+      if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    })();
+  </script>
   <style>
-    body { padding: 16px 20px; }
-    h1 { margin: 0 0 16px; font-size: 1.3em; font-weight: 600; }
+    body { padding: 0; }
+    .shares-hd { display: flex; align-items: center; gap: 12px;
+                 padding: 12px 20px; border-bottom: 1px solid var(--border);
+                 background: var(--bg2); }
+    .shares-hd h1 { margin: 0; font-size: 1.2em; font-weight: 600; flex: 1; }
+    .shares-body { padding: 16px 20px; }
     table { border-collapse: collapse; width: 100%; font-size: .92em; }
-    th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--bd, #2a2a2a); vertical-align: top; }
-    th { font-weight: 600; color: var(--fg2, #aaa); }
-    [data-theme="light"] th { color: #555; }
-    [data-theme="light"] th, [data-theme="light"] td { border-bottom-color: #eee; }
+    th, td { padding: 8px 10px; text-align: left;
+             border-bottom: 1px solid var(--border); vertical-align: top;
+             color: var(--text); }
+    th { font-weight: 600; color: var(--text2); }
     .url { font-family: ui-monospace, Menlo, monospace; font-size: .82em;
-           overflow-wrap: anywhere; max-width: 360px; }
-    .label { color: #888; font-style: italic; }
+           overflow-wrap: anywhere; max-width: 360px; color: var(--text); }
+    .label { color: var(--text2); font-style: italic; }
     .nowrap { white-space: nowrap; }
-    .empty { padding: 24px; text-align: center; color: #888; }
+    .empty { padding: 24px; text-align: center; color: var(--text2); }
     .actions { display: flex; gap: 6px; }
-    .actions button { padding: 3px 10px; cursor: pointer; }
-    .copy-btn { background: #2d4a6a; color: #fff; border: 1px solid #3a5f86;
-                border-radius: 3px; }
-    .revoke-btn { background: #6a2d2d; color: #fff; border: 1px solid #863a3a;
-                  border-radius: 3px; }
-    [data-theme="light"] body { background: #fafafa; }
+    .actions button { padding: 3px 10px; cursor: pointer; border-radius: 3px;
+                      font-size: .85em; }
+    .copy-btn { background: var(--accent); color: #fff;
+                border: 1px solid var(--accent); }
+    .copy-btn:hover { background: var(--accent2); border-color: var(--accent2); }
+    .revoke-btn { background: transparent; color: var(--red);
+                  border: 1px solid var(--red); }
+    .revoke-btn:hover { background: var(--red); color: #fff; }
   </style>
 </head>
 <body>
-<h1>我的分享</h1>
-<div id="content" class="state-msg"><div class="icon">⏳</div>Loading...</div>
+<header class="shares-hd">
+  <h1>我的分享</h1>
+  <button class="theme-toggle" id="theme-toggle" title="切换主题"></button>
+</header>
+<div class="shares-body">
+  <div id="content" class="state-msg"><div class="icon">⏳</div>Loading...</div>
+</div>
 
 <script>
 (function () {
-  // Theme: same persistent local pref as the rest of the preview pages.
-  const t = localStorage.getItem('theme') || 'dark';
-  if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+  // Theme toggle (same pattern as index.html / preview.html).
+  function getTheme() { return localStorage.getItem('theme') || 'light'; }
+  function applyTheme(theme) {
+    if (theme === 'light') {
+      document.documentElement.setAttribute('data-theme', 'light');
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+    document.getElementById('theme-toggle').textContent =
+      theme === 'light' ? '\u{1F319}' : '\u{2600}\u{FE0F}';
+  }
+  applyTheme(getTheme());
+  document.getElementById('theme-toggle').addEventListener('click', () => {
+    const next = getTheme() === 'dark' ? 'light' : 'dark';
+    localStorage.setItem('theme', next);
+    applyTheme(next);
+  });
 
   function fmt(ts) {
     if (!ts) return '永不过期';

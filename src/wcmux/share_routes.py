@@ -429,21 +429,28 @@ def _share_error_html(status: int, msg: str) -> HTMLResponse:
     return HTMLResponse(page, status_code=status, headers=_SHARE_HTTP_HEADERS)
 
 
-# ---- pygments inline highlighting ----
+# ---- pygments highlighting (class-based; light + dark CSS in page <style>) ----
 
-_pygments_formatter = None
+_pygments_formatter_light = None
+_pygments_formatter_dark = None
 _pygments_get_lexer = None
 
 
 def _ensure_pygments():
-    global _pygments_formatter, _pygments_get_lexer
-    if _pygments_formatter is None:
-        from pygments.formatters import HtmlFormatter  # noqa: F401
-        from pygments.lexers import get_lexer_by_name, guess_lexer  # noqa: F401
-        # noclasses=True inlines all styles → satisfies our strict CSP without
-        # needing an extra <style> file the recipient must trust.
-        _pygments_formatter = HtmlFormatter(
-            style="monokai", noclasses=True, linenos=False, nowrap=False)
+    global _pygments_formatter_light, _pygments_formatter_dark, _pygments_get_lexer
+    if _pygments_formatter_light is None:
+        from pygments.formatters import HtmlFormatter
+        from pygments.lexers import get_lexer_by_name
+        # class-based output (`noclasses=False`) so we can ship two CSS rule
+        # sets in the page <style>: a light one as the default plus a dark one
+        # under prefers-color-scheme: dark. Both formatters emit identical
+        # `cssclass="highlight"` markup → same DOM, just different styling.
+        _pygments_formatter_light = HtmlFormatter(
+            style="default", noclasses=False, linenos=False, nowrap=False,
+            cssclass="highlight")
+        _pygments_formatter_dark = HtmlFormatter(
+            style="monokai", noclasses=False, linenos=False, nowrap=False,
+            cssclass="highlight")
         def _get(lang: str):
             try:
                 return get_lexer_by_name(lang, stripall=False)
@@ -456,7 +463,14 @@ def _ensure_pygments():
 def _pygments_highlight(text: str, lang: str) -> str:
     _ensure_pygments()
     from pygments import highlight
-    return highlight(text, _pygments_get_lexer(lang), _pygments_formatter)
+    return highlight(text, _pygments_get_lexer(lang), _pygments_formatter_light)
+
+
+def _pygments_css_pair() -> tuple[str, str]:
+    """(light_rules, dark_rules), both scoped to .highlight."""
+    _ensure_pygments()
+    return (_pygments_formatter_light.get_style_defs(".highlight"),
+            _pygments_formatter_dark.get_style_defs(".highlight"))
 
 
 def _wrap_tables(html_body: str) -> str:
@@ -492,37 +506,62 @@ def _highlight_code_blocks(html_body: str) -> str:
 # ---- inline CSS (no external sheets, satisfies CSP) ----
 
 def _share_page_css() -> str:
-    return """
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    """Light by default; dark only when the recipient's OS prefers it. CSS
+    variables drive color choices so the rest of the rules stay theme-agnostic.
+    Pygments rule sets piggy-back: light at top level, dark inside the same
+    @media (prefers-color-scheme: dark) block."""
+    light_pyg, dark_pyg = _pygments_css_pair()
+    return f"""
+    :root {{
+      --bg: #fafafa; --hd-bg: #fff; --fg: #222; --fg-muted: #666;
+      --fg-faint: #888; --footer: #999; --bd: #e5e5e5; --bd-soft: #eee;
+      --code-bg: #f3f3f3; --link: #0969da; --shadow: rgba(0,0,0,.10);
+    }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{
+        --bg: #0d1117; --hd-bg: #161b22; --fg: #c9d1d9; --fg-muted: #8b949e;
+        --fg-faint: #768390; --footer: #6e7681; --bd: #30363d; --bd-soft: #21262d;
+        --code-bg: #161b22; --link: #58a6ff; --shadow: rgba(0,0,0,.55);
+      }}
+    }}
+    body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI',
            'Helvetica Neue', Arial, 'Noto Sans CJK SC', sans-serif;
-           background: #fafafa; color: #222; }
-    .share-hd { display: flex; align-items: baseline; gap: 12px;
-                padding: 10px 20px; background: #fff;
-                border-bottom: 1px solid #e5e5e5; flex-wrap: wrap; }
-    .share-hd .filename { font-weight: 600; }
-    .share-hd .meta-label { color: #666; }
-    .share-hd .meta-exp { margin-left: auto; color: #888; font-size: .9em; }
-    .share-body { max-width: 920px; margin: 0 auto; padding: 24px 20px 64px; }
-    .share-ft { padding: 12px 20px; color: #999; font-size: .8em;
-                text-align: center; }
-    .md h1, .md h2, .md h3 { line-height: 1.25; }
-    .md h1 { border-bottom: 1px solid #eee; padding-bottom: 6px; }
-    .md p, .md li { line-height: 1.65; }
-    .md a { color: #1a6cba; }
-    .md code { background: #f3f3f3; padding: 1px 5px; border-radius: 3px;
+           background: var(--bg); color: var(--fg); }}
+    .share-hd {{ display: flex; align-items: baseline; gap: 12px;
+                padding: 10px 20px; background: var(--hd-bg);
+                border-bottom: 1px solid var(--bd); flex-wrap: wrap; }}
+    .share-hd .filename {{ font-weight: 600; }}
+    .share-hd .meta-label {{ color: var(--fg-muted); }}
+    .share-hd .meta-exp {{ margin-left: auto; color: var(--fg-faint); font-size: .9em; }}
+    .share-body {{ max-width: 920px; margin: 0 auto; padding: 24px 20px 64px; }}
+    .share-ft {{ padding: 12px 20px; color: var(--footer); font-size: .8em;
+                text-align: center; }}
+    .md h1, .md h2, .md h3 {{ line-height: 1.25; }}
+    .md h1 {{ border-bottom: 1px solid var(--bd-soft); padding-bottom: 6px; }}
+    .md p, .md li {{ line-height: 1.65; }}
+    .md a {{ color: var(--link); }}
+    .md code {{ background: var(--code-bg); padding: 1px 5px; border-radius: 3px;
                font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-               font-size: .92em; }
-    .md pre { padding: 12px 14px; border-radius: 6px; overflow-x: auto; }
-    .md img { max-width: 100%; height: auto; border-radius: 4px; }
-    .md-table-scroll { overflow-x: auto; max-width: 100%;
-                       margin: 12px 0; -webkit-overflow-scrolling: touch; }
-    .md-table-scroll table { margin: 0; }
-    .md table { border-collapse: collapse; }
-    .md th, .md td { border: 1px solid #ddd; padding: 6px 10px; }
-    pre.text { background: #fff; padding: 14px 16px; border: 1px solid #eee;
+               font-size: .92em; }}
+    .md pre {{ padding: 12px 14px; border-radius: 6px; overflow-x: auto;
+               background: var(--code-bg); border: 1px solid var(--bd-soft); }}
+    .md pre code {{ background: none; padding: 0; }}
+    .md img {{ max-width: 100%; height: auto; border-radius: 4px; }}
+    .md-table-scroll {{ overflow-x: auto; max-width: 100%;
+                       margin: 12px 0; -webkit-overflow-scrolling: touch; }}
+    .md-table-scroll table {{ margin: 0; }}
+    .md table {{ border-collapse: collapse; }}
+    .md th, .md td {{ border: 1px solid var(--bd); padding: 6px 10px; }}
+    pre.text {{ background: var(--hd-bg); padding: 14px 16px; border: 1px solid var(--bd-soft);
                border-radius: 6px; overflow-x: auto; white-space: pre-wrap;
-               word-wrap: break-word; font-family: ui-monospace, Menlo, monospace; }
-    .img-wrap { text-align: center; }
-    .img-wrap img { max-width: 100%; max-height: 80vh;
-                    box-shadow: 0 2px 8px rgba(0,0,0,.1); border-radius: 6px; }
+               word-wrap: break-word; font-family: ui-monospace, Menlo, monospace; }}
+    .img-wrap {{ text-align: center; }}
+    .img-wrap img {{ max-width: 100%; max-height: 80vh;
+                    box-shadow: 0 2px 8px var(--shadow); border-radius: 6px; }}
+    /* Pygments — light rule set is the baseline; the dark one overrides via
+       prefers-color-scheme. Both reuse the same `.highlight` class names. */
+    {light_pyg}
+    @media (prefers-color-scheme: dark) {{
+    {dark_pyg}
+    }}
     """

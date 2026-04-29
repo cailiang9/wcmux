@@ -53,7 +53,7 @@
   <script>
     // Apply saved theme immediately to avoid flash
     (function() {
-      var t = localStorage.getItem('theme') || 'dark';
+      var t = localStorage.getItem('theme') || 'light';
       if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
     })();
   </script>
@@ -105,7 +105,7 @@
 
 <script>
 // Theme toggle
-function getTheme() { return localStorage.getItem('theme') || 'dark'; }
+function getTheme() { return localStorage.getItem('theme') || 'light'; }
 function applyTheme(theme) {
   if (theme === 'light') {
     document.documentElement.setAttribute('data-theme', 'light');
