@@ -190,6 +190,18 @@ def main() -> int:
     results.append(("after revoke -> 404 (or 429 if locked)",
                     code in (404, 429), f"got {code}"))
 
+    # 11b) source file deleted between create and view → 410 (not 500).
+    # Make a fresh share over a throw-away file, delete the file, view again.
+    (root / "ephemeral.md").write_text("# bye", encoding="utf-8")
+    code, _, body = c.request("POST", "/api/share",
+                              json_body={"path": "ephemeral.md"})
+    eph_url = json.loads(body).get("url", "")
+    (root / "ephemeral.md").unlink()
+    pub3 = Client(BASE)
+    code, _, _ = pub3.request("GET", urlparse(eph_url).path)
+    results.append(("source missing -> 410 (not 500)",
+                    code == 410, f"got {code}"))
+
     # 12) unsupported file type
     (root / "data.bin").write_bytes(b"\x00\x01\x02")
     code, _, _ = c.request("POST", "/api/share", json_body={"path": "data.bin"})

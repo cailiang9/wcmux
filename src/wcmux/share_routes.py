@@ -160,6 +160,11 @@ def revoke_share(share_id: str, request: Request,
 def share_view(date: str, seg: str, request: Request) -> HTMLResponse:
     sid, share = _lookup_or_4xx(date, seg, request)
     src = Path(share["source_real_path"])
+    # Source may have moved / been deleted / been on a now-unmounted drive
+    # since the share was created; render a friendly 410 instead of a 500
+    # that leaks tracebacks into journald and confuses the recipient.
+    if not src.exists() or not src.is_file():
+        return _share_error_html(410, "Shared file is no longer available")
     ftype = file_type(src)
     if ftype not in _RENDERABLE_TYPES:
         return _share_error_html(415, "Unsupported file type for share")
@@ -167,7 +172,11 @@ def share_view(date: str, seg: str, request: Request) -> HTMLResponse:
     # Update view count BEFORE rendering so a render-time error still records
     # the access (helps spot abuse).
     request.app.state.shares.touch(sid)
-    body_html = _render_share_body(share, src, ftype, request)
+    try:
+        body_html = _render_share_body(share, src, ftype, request)
+    except OSError as e:
+        # mid-read EIO / permission flips / dir suddenly unmounted, etc.
+        return _share_error_html(410, f"Shared file is unreadable: {e}")
     page = _wrap_share_page(share, body_html, src, ftype)
     return HTMLResponse(page, headers=_SHARE_HTTP_HEADERS)
 
