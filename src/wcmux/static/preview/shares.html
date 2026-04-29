@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>我的分享 · wcmux</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    body { padding: 16px 20px; }
+    h1 { margin: 0 0 16px; font-size: 1.3em; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; font-size: .92em; }
+    th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--bd, #2a2a2a); vertical-align: top; }
+    th { font-weight: 600; color: var(--fg2, #aaa); }
+    [data-theme="light"] th { color: #555; }
+    [data-theme="light"] th, [data-theme="light"] td { border-bottom-color: #eee; }
+    .url { font-family: ui-monospace, Menlo, monospace; font-size: .82em;
+           overflow-wrap: anywhere; max-width: 360px; }
+    .label { color: #888; font-style: italic; }
+    .nowrap { white-space: nowrap; }
+    .empty { padding: 24px; text-align: center; color: #888; }
+    .actions { display: flex; gap: 6px; }
+    .actions button { padding: 3px 10px; cursor: pointer; }
+    .copy-btn { background: #2d4a6a; color: #fff; border: 1px solid #3a5f86;
+                border-radius: 3px; }
+    .revoke-btn { background: #6a2d2d; color: #fff; border: 1px solid #863a3a;
+                  border-radius: 3px; }
+    [data-theme="light"] body { background: #fafafa; }
+  </style>
+</head>
+<body>
+<h1>我的分享</h1>
+<div id="content" class="state-msg"><div class="icon">⏳</div>Loading...</div>
+
+<script>
+(function () {
+  // Theme: same persistent local pref as the rest of the preview pages.
+  const t = localStorage.getItem('theme') || 'dark';
+  if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+
+  function fmt(ts) {
+    if (!ts) return '永不过期';
+    const d = new Date(ts * 1000);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    return `${y}-${m}-${dd} ${hh}:${mm}`;
+  }
+  function relative(ts) {
+    if (!ts) return '从未';
+    const diff = Math.floor(Date.now() / 1000) - ts;
+    if (diff < 60) return '刚刚';
+    if (diff < 3600) return Math.floor(diff / 60) + ' 分钟前';
+    if (diff < 86400) return Math.floor(diff / 3600) + ' 小时前';
+    return Math.floor(diff / 86400) + ' 天前';
+  }
+
+  async function load() {
+    const content = document.getElementById('content');
+    let data;
+    try {
+      const r = await fetch('../../api/share', { credentials: 'same-origin' });
+      if (r.status === 401) { location.href = '../../login'; return; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      data = await r.json();
+    } catch (e) {
+      content.innerHTML = '<div class="empty">加载失败: ' + e.message + '</div>';
+      return;
+    }
+    const rows = data.shares || [];
+    if (!rows.length) {
+      content.innerHTML = '<div class="empty">还没有分享链接。前往任意 preview 页右上角 "🔗 分享" 创建。</div>';
+      return;
+    }
+    const trs = rows.map((s, i) => `
+      <tr data-id="${s.id}">
+        <td class="nowrap">${s.date}</td>
+        <td>${escapeHtml(s.source_url_path)}${s.label ? '<br><span class="label">' + escapeHtml(s.label) + '</span>' : ''}</td>
+        <td class="url">${escapeHtml(s.url)}</td>
+        <td class="nowrap">${s.expires_at ? fmt(s.expires_at) : '永不'}</td>
+        <td class="nowrap">${s.view_count} · ${relative(s.last_viewed)}</td>
+        <td class="actions">
+          <button class="copy-btn" data-url="${escapeHtml(s.url)}">复制</button>
+          <button class="revoke-btn" data-id="${s.id}">撤销</button>
+        </td>
+      </tr>`).join('');
+    content.innerHTML = `
+      <table>
+        <thead><tr><th>日期</th><th>源文件</th><th>URL</th><th>过期</th><th>访问</th><th></th></tr></thead>
+        <tbody>${trs}</tbody>
+      </table>`;
+    content.querySelectorAll('.copy-btn').forEach(b => {
+      b.addEventListener('click', async () => {
+        const u = new URL(b.dataset.url, location.origin).href;
+        try { await navigator.clipboard.writeText(u); b.textContent = '✓'; }
+        catch { b.textContent = '失败'; }
+        setTimeout(() => { b.textContent = '复制'; }, 1500);
+      });
+    });
+    content.querySelectorAll('.revoke-btn').forEach(b => {
+      b.addEventListener('click', async () => {
+        if (!confirm('确认撤销?')) return;
+        const r = await fetch('../../api/share/' + encodeURIComponent(b.dataset.id),
+          { method: 'DELETE', credentials: 'same-origin' });
+        if (r.ok) {
+          const tr = b.closest('tr'); if (tr) tr.remove();
+          // If list is empty after removal, re-render the empty state.
+          if (!content.querySelector('tbody tr')) load();
+        }
+      });
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  load();
+})();
+</script>
+</body>
+</html>

@@ -5,6 +5,36 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Preview</title>
   <link rel="stylesheet" href="style.css">
+  <style>
+    .share-btn { background: none; border: 1px solid #555; color: inherit;
+                 cursor: pointer; padding: 4px 10px; border-radius: 3px;
+                 font-size: .85em; margin-right: 6px; }
+    .share-btn:hover { background: rgba(125,125,125,.1); }
+    .share-dialog { width: min(520px, 92vw); border: 1px solid #444;
+                    border-radius: 6px; padding: 18px 20px; background: #1d1d1d;
+                    color: #ddd; }
+    .share-dialog::backdrop { background: rgba(0,0,0,.55); }
+    [data-theme="light"] .share-dialog { background: #fff; color: #222;
+                                         border-color: #ccc; }
+    .share-dialog h3 { margin: 0 0 12px; }
+    .share-dialog .row { display: flex; gap: 10px; align-items: center;
+                         margin: 10px 0; }
+    .share-dialog .row > span { flex: 0 0 80px; }
+    .share-dialog input, .share-dialog select { flex: 1 1 auto; padding: 5px 8px;
+                                                background: #2a2a2a; color: #ddd;
+                                                border: 1px solid #444; border-radius: 3px; }
+    [data-theme="light"] .share-dialog input,
+    [data-theme="light"] .share-dialog select { background: #f7f7f7; color: #222; border-color: #ccc; }
+    .share-dialog .buttons { justify-content: flex-end; margin-top: 16px; }
+    .share-dialog .buttons button { padding: 5px 14px; cursor: pointer; }
+    .share-dialog #share-submit { background: #2d4a6a; color: #fff;
+                                  border: 1px solid #3a5f86; }
+    .share-dialog #share-revoke { background: #6a2d2d; color: #fff;
+                                  border: 1px solid #863a3a; }
+    .share-url-wrap { display: flex; gap: 6px; flex: 1 1 auto; }
+    .share-url-wrap input { font-family: ui-monospace, Menlo, monospace; font-size: .85em; }
+    .share-skipped { color: #c80; font-size: .85em; flex-basis: 100%; }
+  </style>
   <!-- highlight.js via CDN -->
   <link id="hljs-theme" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
@@ -21,10 +51,45 @@
   <div class="preview-header">
     <a class="back-btn" id="back-btn" href="index.html">← 返回</a>
     <div class="file-title" id="file-title">Loading...</div>
+    <button class="share-btn" id="share-btn" title="分享此文件">🔗 分享</button>
     <button class="theme-toggle" id="theme-toggle" title="切换主题"></button>
   </div>
   <div id="content"><div class="state-msg"><div class="icon">⏳</div>Loading...</div></div>
 </div>
+
+<dialog id="share-dialog" class="share-dialog">
+  <form method="dialog" id="share-form">
+    <h3>分享此文件</h3>
+    <label class="row">
+      <span>过期时间</span>
+      <select id="share-expires">
+        <option value="1d">1 天</option>
+        <option value="7d">7 天</option>
+        <option value="1mo">1 个月</option>
+        <option value="3mo">3 个月</option>
+        <option value="1y" selected>1 年</option>
+        <option value="3y">3 年</option>
+        <option value="never">永不过期</option>
+      </select>
+    </label>
+    <label class="row">
+      <span>备注</span>
+      <input id="share-label" type="text" maxlength="200" placeholder="可选,自己看的标签 e.g. 给小张" />
+    </label>
+    <div class="row" id="share-result" hidden>
+      <div class="share-url-wrap">
+        <input id="share-url" type="text" readonly />
+        <button type="button" id="share-copy">复制</button>
+      </div>
+      <div id="share-skipped" class="share-skipped" hidden></div>
+    </div>
+    <div class="row buttons">
+      <button type="button" id="share-cancel">关闭</button>
+      <button type="button" id="share-revoke" hidden>撤销</button>
+      <button type="button" id="share-submit">生成链接</button>
+    </div>
+  </form>
+</dialog>
 
 <script>
 // Theme toggle
@@ -291,6 +356,103 @@ function initDrawio(xml, filePath, container) {
 }
 
 load();
+
+// ---- spec §4.23: share dialog ----
+(function () {
+  const dlg = document.getElementById('share-dialog');
+  const btn = document.getElementById('share-btn');
+  const submit = document.getElementById('share-submit');
+  const cancel = document.getElementById('share-cancel');
+  const revoke = document.getElementById('share-revoke');
+  const expSel = document.getElementById('share-expires');
+  const labelInp = document.getElementById('share-label');
+  const result = document.getElementById('share-result');
+  const urlInp = document.getElementById('share-url');
+  const copyBtn = document.getElementById('share-copy');
+  const skippedEl = document.getElementById('share-skipped');
+  let currentId = null;
+
+  function showResult(payload) {
+    currentId = payload.id;
+    urlInp.value = new URL(payload.url, location.origin).href;
+    result.hidden = false;
+    submit.hidden = true;
+    revoke.hidden = false;
+    if (payload.assets_skipped && payload.assets_skipped.length) {
+      const lines = payload.assets_skipped
+        .map(s => `· ${s.path}: ${s.reason}`).join('<br>');
+      skippedEl.innerHTML = `${payload.assets_skipped.length} 张图片未打包：<br>${lines}`;
+      skippedEl.hidden = false;
+    } else {
+      skippedEl.hidden = true;
+    }
+  }
+  function resetDialog() {
+    currentId = null;
+    result.hidden = true;
+    submit.hidden = false;
+    revoke.hidden = true;
+    skippedEl.hidden = true;
+    urlInp.value = '';
+  }
+
+  btn.addEventListener('click', () => {
+    resetDialog();
+    if (typeof dlg.showModal === 'function') dlg.showModal();
+    else dlg.setAttribute('open', '');
+  });
+  cancel.addEventListener('click', () => dlg.close());
+
+  submit.addEventListener('click', async () => {
+    submit.disabled = true;
+    try {
+      const path = getPath();
+      const r = await fetch('../../api/share', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          path: path,
+          expires_in: expSel.value,
+          label: labelInp.value || '',
+        }),
+      });
+      if (r.status === 401) { location.href = '../../login'; return; }
+      if (!r.ok) {
+        let msg = `HTTP ${r.status}`;
+        try { msg = (await r.json()).detail || msg; } catch {}
+        skippedEl.textContent = '生成失败: ' + msg;
+        skippedEl.hidden = false;
+        return;
+      }
+      showResult(await r.json());
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  revoke.addEventListener('click', async () => {
+    if (!currentId) return;
+    if (!confirm('确认撤销此分享链接？')) return;
+    revoke.disabled = true;
+    try {
+      const r = await fetch('../../api/share/' + encodeURIComponent(currentId), {
+        method: 'DELETE', credentials: 'same-origin',
+      });
+      if (r.ok) { dlg.close(); }
+    } finally {
+      revoke.disabled = false;
+    }
+  });
+
+  copyBtn.addEventListener('click', () => {
+    urlInp.select();
+    navigator.clipboard.writeText(urlInp.value).then(() => {
+      copyBtn.textContent = '✓';
+      setTimeout(() => { copyBtn.textContent = '复制'; }, 1500);
+    }).catch(() => {});
+  });
+})();
 </script>
 </body>
 </html>

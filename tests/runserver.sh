@@ -33,6 +33,9 @@ for er in $(echo "$WCMUX_PREVIEW_EXTRA_ROOTS" | tr ':' ' '); do
   rm -rf "$er" 2>/dev/null || true
   mkdir -p "$er"
 done
+# spec §4.23: per-run share registry — never touch the user's real one.
+export WCMUX_SHARES_FILE="${WCMUX_SHARES_FILE:-/tmp/wcmux-test-shares.json}"
+rm -f "$WCMUX_SHARES_FILE" 2>/dev/null || true
 
 unset http_proxy https_proxy
 

@@ -17,6 +17,8 @@ from .auth import LockoutRegistry, build_auth_router, require_auth
 from .config import Config
 from .devices import DeviceRegistry
 from .preview import router as preview_router
+from .share_routes import router as share_router
+from .shares import ShareRegistry
 from .sessions import (
     SessionRegistry,
     cwd_is_valid,
@@ -71,6 +73,8 @@ def create_app(config: Config) -> FastAPI:
         seen.add(p)
         _extra_paths.append(p)
     app.state.preview_roots = [_primary, *_extra_paths]
+    # spec §4.23: share registry. Persisted alongside devices.json.
+    app.state.shares = ShareRegistry()
 
     app.add_middleware(
         SessionMiddleware,
@@ -93,6 +97,7 @@ def create_app(config: Config) -> FastAPI:
 
     app.include_router(build_auth_router(templates))
     app.include_router(preview_router)
+    app.include_router(share_router)
 
     @app.on_event("startup")
     async def _startup() -> None:

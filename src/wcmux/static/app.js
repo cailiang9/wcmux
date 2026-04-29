@@ -819,6 +819,18 @@
     });
     tabMenu.appendChild(dev);
 
+    // "我的分享" — opens the share-list page in a new window (spec §4.23).
+    const shares = document.createElement("div");
+    shares.className = "tab-menu-item tab-menu-action";
+    shares.setAttribute("role", "menuitem");
+    shares.title = "List and revoke share links you've generated";
+    shares.textContent = "我的分享";
+    shares.addEventListener("click", () => {
+      window.open(BASE + "/static/preview/shares.html", "_blank", "noopener,noreferrer");
+      closeTabMenu();
+    });
+    tabMenu.appendChild(shares);
+
     // Footer: logout (spec §4.22 — moved out of toolbar to free space for the
     // preview-search box). Uses POST so we don't break CSRF assumptions.
     const sep2 = document.createElement("div");
