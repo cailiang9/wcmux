@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import errno
 import fcntl
 import os
@@ -33,6 +34,7 @@ class UnixTerminal:
         self._queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._closed = False
         self._loop = asyncio.get_event_loop()
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._loop.add_reader(self._fd, self._on_readable)
 
     # --- Protocol impl --------------------------------------------------
@@ -49,10 +51,16 @@ class UnixTerminal:
                 raise
 
     async def read(self) -> str:
-        chunk = await self._queue.get()
-        if chunk is None:
-            raise EOFError("pty closed")
-        return chunk.decode("utf-8", errors="replace")
+        while True:
+            chunk = await self._queue.get()
+            if chunk is None:
+                tail = self._decoder.decode(b"", final=True)
+                if tail:
+                    return tail
+                raise EOFError("pty closed")
+            text = self._decoder.decode(chunk)
+            if text:
+                return text
 
     def resize(self, rows: int, cols: int) -> None:
         if self._closed:
