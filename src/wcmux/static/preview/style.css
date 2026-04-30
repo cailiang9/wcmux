@@ -151,7 +151,8 @@ a:hover { text-decoration: underline; }
 }
 .md-body pre {
   background: var(--bg3); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 16px; overflow-x: auto; margin: 16px 0;
+  border-radius: var(--radius); padding: 16px; margin: 16px 0;
+  white-space: pre-wrap; word-break: break-word; overflow-x: auto;
 }
 .md-body pre code {
   background: none; border: none; padding: 0; color: var(--text); font-size: 0.875em;
@@ -190,9 +191,32 @@ a:hover { text-decoration: underline; }
   margin: 0 !important; padding: 20px !important;
   background: var(--bg2) !important;
   border-radius: 0 !important;
-  overflow-x: auto;
+  white-space: pre-wrap; word-break: break-word; overflow-x: auto;
 }
 .code-wrap code { font-family: "JetBrains Mono", "Fira Code", monospace !important; font-size: 13px !important; }
+
+/* highlightjs-line-numbers.js — 2-col <table>, 1st col is line numbers.
+   width: 100% on table + width: 1% on linenos col makes the code col
+   absorb the rest, keeping line numbers shrink-to-fit. */
+.hljs-ln { width: 100%; table-layout: auto; }
+.hljs-ln td.hljs-ln-numbers {
+  user-select: none; -webkit-user-select: none;
+  width: 1%;
+  text-align: right; padding-right: 12px !important;
+  color: var(--text2); opacity: .55;
+  border-right: 1px solid var(--border);
+  white-space: nowrap; vertical-align: top;
+  font-variant-numeric: tabular-nums;
+}
+.hljs-ln td.hljs-ln-code {
+  width: auto;
+  padding-left: 12px !important; vertical-align: top;
+  white-space: pre-wrap; word-break: break-word;
+}
+.hljs-ln tr { background: transparent !important; }
+.hljs-ln tbody, .hljs-ln tr, .hljs-ln td {
+  border: 0; padding: 0; margin: 0;
+}
 
 /* ── Text ── */
 .text-wrap {

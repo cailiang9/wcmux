@@ -21,6 +21,12 @@ from .auth import require_auth
 # ---- file type recognition (ported from mdpreview) ----
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".webp", ".ico", ".tiff", ".avif"}
+PDF_EXTS = {".pdf"}
+# Media / font types are recognized so HTML pages can reference them via the
+# path-based /raw/preview/{path} route; not standalone preview/share types.
+MEDIA_EXTS = {".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v",
+              ".mp3", ".wav", ".ogg", ".oga", ".m4a", ".flac"}
+FONT_EXTS = {".woff", ".woff2", ".ttf", ".otf", ".eot"}
 HTML_EXTS = {".html", ".htm"}
 DRAWIO_EXTS = {".drawio"}
 JSONL_EXTS = {".jsonl", ".ndjson"}
@@ -31,6 +37,7 @@ CODE_EXTS = {
     ".css", ".scss", ".less", ".xml", ".json", ".yaml", ".yml",
     ".toml", ".sql", ".r", ".lua", ".vim", ".tf", ".proto", ".graphql",
     ".dockerfile", ".makefile", ".cmake", ".gradle", ".ini", ".cfg",
+    ".tex", ".cls", ".sty", ".bib", ".bst",
 }
 TEXT_EXTS = {".txt", ".log", ".csv", ".tsv", ".env", ".conf", ".gitignore", ".editorconfig"}
 
@@ -45,6 +52,8 @@ LANG_MAP = {
     ".toml": "toml", ".sql": "sql", ".r": "r", ".lua": "lua",
     ".tf": "hcl", ".proto": "protobuf", ".graphql": "graphql",
     ".ini": "ini", ".cfg": "ini",
+    ".tex": "latex", ".cls": "latex", ".sty": "latex",
+    ".bib": "bibtex", ".bst": "bibtex",
 }
 
 JSONL_TRUNCATE_THRESHOLD = 10000
@@ -62,6 +71,7 @@ def file_type(p: Path) -> str:
     ext = p.suffix.lower()
     name = p.name.lower()
     if ext in IMAGE_EXTS: return "image"
+    if ext in PDF_EXTS: return "pdf"
     if ext in HTML_EXTS: return "html"
     if ext in DRAWIO_EXTS: return "drawio"
     if ext in JSONL_EXTS: return "jsonl"
@@ -69,6 +79,8 @@ def file_type(p: Path) -> str:
     if ext in CODE_EXTS or name in {"dockerfile", "makefile", "gemfile", "rakefile"}:
         return "code"
     if ext in TEXT_EXTS: return "text"
+    if ext in MEDIA_EXTS: return "media"
+    if ext in FONT_EXTS: return "font"
     return "unknown"
 
 
@@ -228,6 +240,8 @@ def api_file(request: Request,
 
     if ftype == "image":
         return JSONResponse({"type": "image", "path": path})
+    if ftype == "pdf":
+        return JSONResponse({"type": "pdf", "path": path})
     if ftype == "html":
         return JSONResponse({"type": "html", "path": path})
 
@@ -400,6 +414,31 @@ def raw_file(request: Request,
     normalization (a leading `/` collapsed to `//` would otherwise vanish).
     Refuses unsupported types so we don't accidentally turn into a generic
     file server."""
+    roots = _preview_roots(request)
+    target = resolve_path(roots, path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404)
+    ftype = file_type(target)
+    if ftype == "unknown":
+        raise HTTPException(status_code=404)
+    return FileResponse(target)
+
+
+@router.get("/raw/preview/{path:path}")
+def raw_file_tree(request: Request, path: str,
+                  _=Depends(require_auth)) -> FileResponse:
+    """Path-based variant of /raw/preview — used as an `<iframe src>` for
+    HTML files so the document URL is `/raw/preview/dir/page.html` instead
+    of `/raw/preview?path=…`. With the tree URL form, relative refs inside
+    the HTML (`<img src="figure.png">`, `<video src="clip.mp4">`, etc.)
+    resolve to `/raw/preview/dir/figure.png` and hit this same route on a
+    sibling file. The query-param form is incompatible with relative refs
+    because RFC 3986 drops the query when resolving a relative URL.
+
+    Path comes from URL segments (FastAPI :path converter eats `/` chars
+    AND collapses `//` to `/`; absolute paths under extra roots therefore
+    can't reach this route — those still need the query-param form). Same
+    auth + same root-scope check as raw_file."""
     roots = _preview_roots(request)
     target = resolve_path(roots, path)
     if not target.exists() or not target.is_file():

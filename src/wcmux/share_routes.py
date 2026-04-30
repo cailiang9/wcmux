@@ -39,20 +39,85 @@ from .shares import (
 
 router = APIRouter()
 
-_RENDERABLE_TYPES = {"markdown", "code", "text", "image"}
+_RENDERABLE_TYPES = {"markdown", "code", "text", "image", "pdf", "drawio", "html"}
 
-_SHARE_HTTP_HEADERS = {
+# Base headers shared by every /share response. CSP varies per file type
+# (see `_share_headers`); the rest are constant.
+_SHARE_BASE_HEADERS = {
     "Cache-Control": "private, no-store",
     "X-Frame-Options": "DENY",
-    # Locks down rendered share HTML: no inline scripts, no external assets,
-    # only same-origin <img> (we serve them from /share/.../a) plus inline
-    # styles for syntax-highlighting / pygments noclasses output.
-    "Content-Security-Policy":
-        "default-src 'none'; img-src 'self' data:; "
-        "style-src 'self' 'unsafe-inline'; script-src 'none'; "
-        "frame-ancestors 'none';",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
+}
+
+# Strict default — locks down rendered share HTML: no inline scripts, no
+# external assets, only same-origin <img>/<iframe>/<object> (we serve them
+# from /share/.../a or /share/.../raw) plus inline styles for syntax-
+# highlighting / pygments output. `frame-src 'self'` admits same-origin
+# iframes; `object-src 'self'` admits same-origin <object>/<embed> (used
+# by PDF shares — without this directive, default-src 'none' would block
+# the PDF embed and the desktop browser would silently fall through to
+# the `<object>`'s inner fallback content).
+_CSP_STRICT = (
+    "default-src 'none'; img-src 'self' data:; "
+    "style-src 'self' 'unsafe-inline'; script-src 'none'; "
+    "frame-src 'self'; object-src 'self'; "
+    "frame-ancestors 'none';"
+)
+
+# drawio shares need to (a) load https://embed.diagrams.net inside an iframe
+# and (b) run a small inline <script> that postMessages the XML payload to
+# that iframe on the embed-protocol 'init' event. So we relax script-src to
+# allow inline + frame-src to whitelist the drawio embed origin. No new
+# external connect-src (the iframe handles its own asset fetches under its
+# own origin's CSP, not ours).
+_CSP_DRAWIO = (
+    "default-src 'none'; img-src 'self' data:; "
+    "style-src 'self' 'unsafe-inline'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "frame-src 'self' https://embed.diagrams.net; "
+    "frame-ancestors 'none';"
+)
+
+# HTML shares serve the source HTML inside a sandboxed <iframe> from the
+# same origin (path-based /share/.../raw/<path>) so relative <img>/<video>/
+# <audio>/<link>/<script> refs inside the HTML resolve to sibling files
+# served by the same route. The iframe sandbox attribute (set on the iframe
+# element, not via CSP) restricts what the HTML can do; the outer page
+# itself stays script-free.
+_CSP_HTML = (
+    "default-src 'none'; img-src 'self' data:; "
+    "style-src 'self' 'unsafe-inline'; script-src 'none'; "
+    "frame-src 'self'; frame-ancestors 'none';"
+)
+
+
+def _share_headers(ftype: str) -> dict:
+    if ftype == "drawio":
+        csp = _CSP_DRAWIO
+    elif ftype == "html":
+        csp = _CSP_HTML
+    else:
+        csp = _CSP_STRICT
+    return {**_SHARE_BASE_HEADERS, "Content-Security-Policy": csp}
+
+
+# Back-compat alias for asset/raw routes that don't need per-ftype CSP.
+_SHARE_HTTP_HEADERS = {**_SHARE_BASE_HEADERS, "Content-Security-Policy": _CSP_STRICT}
+
+# Headers for /raw and /raw/{path:path} responses that the share PAGE itself
+# embeds via <iframe>/<img>/<video>. We need:
+#   1. CSP `frame-ancestors 'self'` (modern browsers) so our share page can
+#      frame these bytes, but foreign origins still can't.
+#   2. **Override** `X-Frame-Options: DENY` (inherited from base) to
+#      `SAMEORIGIN`. Older browsers ignore CSP frame-ancestors and rely on
+#      X-Frame-Options; with DENY left in place, iframe load gets blocked
+#      and the browser falls back to navigating directly — for PDFs that
+#      means an auto-download dialog (the bug we're fixing).
+_SHARE_RAW_HEADERS = {
+    **_SHARE_BASE_HEADERS,
+    "X-Frame-Options": "SAMEORIGIN",
+    "Content-Security-Policy": "frame-ancestors 'self';",
 }
 
 
@@ -86,6 +151,17 @@ async def create_share(request: Request, _=Depends(require_auth)) -> JSONRespons
             detail="source resolves (via symlink?) outside preview roots")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="not found")
+
+    # Refuse to create shares for files whose path includes any hidden
+    # segment (`.env`, `.bash_history`, `.aws/credentials`, `.ssh/id_rsa`,
+    # …). These are almost never something the creator means to expose;
+    # accidentally pasting such a share URL into Slack would leak secrets.
+    # Listing / search already filter dotfiles, but `path=` is a direct
+    # entry point — block here at the create-share boundary.
+    if any(part.startswith(".") for part in target.parts):
+        raise HTTPException(
+            status_code=415,
+            detail="cannot share hidden files / files under hidden directories")
 
     ftype = file_type(target)
     if ftype not in _RENDERABLE_TYPES:
@@ -178,7 +254,7 @@ def share_view(date: str, seg: str, request: Request) -> HTMLResponse:
         # mid-read EIO / permission flips / dir suddenly unmounted, etc.
         return _share_error_html(410, f"Shared file is unreadable: {e}")
     page = _wrap_share_page(share, body_html, src, ftype)
-    return HTMLResponse(page, headers=_SHARE_HTTP_HEADERS)
+    return HTMLResponse(page, headers=_share_headers(ftype))
 
 
 @router.get("/share/{date}/{seg}/a")
@@ -192,8 +268,9 @@ def share_asset(date: str, seg: str, request: Request,
     real = Path(asset["real_path"])
     if not real.exists() or not real.is_file():
         raise HTTPException(status_code=404)
-    headers = dict(_SHARE_HTTP_HEADERS)
-    return FileResponse(real, headers=headers)
+    return FileResponse(real, filename=real.name,
+                        content_disposition_type="inline",
+                        headers=dict(_SHARE_RAW_HEADERS))
 
 
 # ---- helpers ----
@@ -289,8 +366,8 @@ def _scan_assets_for_share(target: Path, ftype: str, roots: list[Path]):
         if not real.is_file():
             skipped.append({"path": raw_url, "reason": "not a regular file"})
             continue
-        if real.name.startswith("."):
-            skipped.append({"path": raw_url, "reason": "hidden file"})
+        if any(part.startswith(".") for part in real.parts):
+            skipped.append({"path": raw_url, "reason": "hidden file or hidden ancestor dir"})
             continue
         if real.suffix.lower() not in IMAGE_EXTS:
             skipped.append({"path": raw_url, "reason": "not an image extension"})
@@ -370,6 +447,89 @@ def _render_share_body(share: dict, src: Path, ftype: str,
                 f'<img alt="" src="{html.escape(share_base)}/raw?path='
                 f'{quote(url, safe="")}"></div>')
 
+    if ftype == "pdf":
+        from urllib.parse import quote
+        share_base = _share_path(share)
+        url = share["source_url_path"]
+        raw_url = f'{share_base}/raw?path={quote(url, safe="")}'
+        raw_url_esc = html.escape(raw_url)
+        # `<object>` instead of `<iframe>`: when the browser can't render
+        # the embedded PDF (notably iOS Safari / Android Chrome inside an
+        # iframe), `<object>` falls back to its inner content automatically.
+        # Below the object we always render a "open in new tab" link — on
+        # mobile this is the only reliable path (system PDF viewer takes
+        # over once the URL is the top-level navigation, which `<object>`
+        # / `<iframe>` embeds aren't).
+        return (
+            f'<div class="pdf-wrap">'
+            f'<object data="{raw_url_esc}" type="application/pdf">'
+            f'<p class="pdf-fallback-inner">'
+            f'此浏览器无法内嵌渲染 PDF。'
+            f'<a href="{raw_url_esc}" target="_blank" rel="noopener">在新标签页打开 PDF</a>'
+            f'</p>'
+            f'</object>'
+            f'<p class="pdf-fallback">'
+            f'移动端 / 嵌入查看不便？'
+            f'<a href="{raw_url_esc}" target="_blank" rel="noopener">在新标签页打开 PDF</a>'
+            f'</p>'
+            f'</div>'
+        )
+
+    if ftype == "drawio":
+        # Inline the .drawio XML inside a hidden <pre> (HTML-escaped); the
+        # script reads its textContent (which un-escapes back to original
+        # XML) and ships it to embed.diagrams.net via postMessage on init.
+        # CSP for drawio shares allows inline-script + the embed origin
+        # (see `_CSP_DRAWIO`); no external CDN, no fetch.
+        try:
+            xml = src.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            xml = ""
+        escaped_xml = html.escape(xml)
+        return (
+            f'<div class="drawio-wrap">'
+            f'<pre id="drawio-xml" style="display:none">{escaped_xml}</pre>'
+            f'<iframe id="drawio-frame" title="drawio diagram" '
+            f'src="https://embed.diagrams.net/?embed=1&proto=json&spin=1&dark=auto"></iframe>'
+            f'</div>'
+            f'<script>'
+            f'(function(){{'
+            f'var xml=document.getElementById("drawio-xml").textContent;'
+            f'var f=document.getElementById("drawio-frame");'
+            f'window.addEventListener("message",function(e){{'
+            f'if(e.origin!=="https://embed.diagrams.net")return;'
+            f'var m;try{{m=JSON.parse(e.data);}}catch(_){{return;}}'
+            f'if(m.event==="init"){{'
+            f'f.contentWindow.postMessage(JSON.stringify({{'
+            f'action:"load",xml:xml,autosave:0,saveAndExit:0,noSaveBtn:1,noExitBtn:1'
+            f'}}),"https://embed.diagrams.net");'
+            f'}}'
+            f'}});'
+            f'}})();'
+            f'</script>'
+        )
+
+    if ftype == "html":
+        from urllib.parse import quote
+        share_base = _share_path(share)
+        url = share["source_url_path"]
+        # Path-based iframe URL: <img src="x.png"> in the HTML resolves to
+        # /share/.../raw/<dir-of-source>/x.png and hits `share_raw_tree`,
+        # which serves the sibling file. Absolute source paths (under extra
+        # roots) can't ride the path-based route — fall back to the query-
+        # param raw endpoint (page loads, but relative refs inside won't).
+        if url.startswith("/"):
+            iframe_src = f'{share_base}/raw?path={quote(url, safe="")}'
+        else:
+            path_encoded = "/".join(quote(s, safe="") for s in url.split("/"))
+            iframe_src = f'{share_base}/raw/{path_encoded}'
+        return (
+            f'<div class="html-wrap">'
+            f'<iframe title="" src="{html.escape(iframe_src)}" '
+            f'sandbox="allow-scripts allow-popups allow-forms"></iframe>'
+            f'</div>'
+        )
+
     # Should not reach (filtered earlier).
     return f"<p>Unsupported type: {html.escape(ftype)}</p>"
 
@@ -391,8 +551,61 @@ def share_raw_source(date: str, seg: str, request: Request,
     real = Path(share["source_real_path"])
     if not real.exists() or not real.is_file():
         raise HTTPException(status_code=404)
-    headers = dict(_SHARE_HTTP_HEADERS)
-    return FileResponse(real, headers=headers)
+    return FileResponse(real, filename=real.name,
+                        content_disposition_type="inline",
+                        headers=dict(_SHARE_RAW_HEADERS))
+
+
+@router.get("/share/{date}/{seg}/raw/{path:path}")
+def share_raw_tree(date: str, seg: str, path: str,
+                   request: Request) -> FileResponse:
+    """Path-based asset endpoint **for HTML shares only**. The HTML iframe
+    loads from this route, so `<img src="figure.png">` inside the HTML
+    resolves to /share/.../raw/<dir>/figure.png and hits this same route.
+
+    The route is gated by source ftype: if the share's source isn't HTML
+    we refuse with 404, even though the route's URL pattern is identical
+    across all share types. This prevents a non-HTML share's URL (whose
+    holder is only entitled to ONE file by the share contract) from being
+    weaponized to enumerate `<source-parent>/credentials.json` etc.
+
+    Scope (for HTML shares): target file must lie within the source's
+    parent directory (or deeper) on the same preview root. Hidden files
+    (`.foo`) are blocked to prevent ref-based exfiltration of dotfiles
+    (`.env`, `.git/config`, …). Files of file_type=='unknown' are refused
+    so the route never turns into a generic anything-server."""
+    from .preview import (
+        _preview_roots, file_type as _file_type, resolve_path as _resolve,
+    )
+    sid, share = _lookup_or_4xx(date, seg, request)
+    # Gate: only HTML-typed shares may dereference siblings via this route.
+    # Other types route raw fetches through the strict /raw?path= endpoint
+    # (which requires path == source_url_path, so no sibling exposure).
+    src = Path(share["source_real_path"]).resolve(strict=False)
+    if not src.exists() or not src.is_file():
+        raise HTTPException(status_code=410, detail="source no longer exists")
+    if _file_type(src) != "html":
+        raise HTTPException(status_code=404)
+    roots = _preview_roots(request)
+    target = _resolve(roots, path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404)
+    if any(part.startswith(".") for part in target.parts):
+        raise HTTPException(status_code=404)
+    ftype = _file_type(target)
+    if ftype == "unknown":
+        raise HTTPException(status_code=404)
+    # Scope to source's parent dir (or its descendants). Source itself is
+    # also allowed (the iframe's own src lands here on first request).
+    src_dir = src.parent
+    target_real = target.resolve(strict=False)
+    try:
+        target_real.relative_to(src_dir)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="outside share scope")
+    return FileResponse(target_real, filename=target_real.name,
+                        content_disposition_type="inline",
+                        headers=dict(_SHARE_RAW_HEADERS))
 
 
 def _wrap_share_page(share: dict, body_html: str, src: Path, ftype: str) -> str:
@@ -445,12 +658,18 @@ def _ensure_pygments():
         # sets in the page <style>: a light one as the default plus a dark one
         # under prefers-color-scheme: dark. Both formatters emit identical
         # `cssclass="highlight"` markup → same DOM, just different styling.
+        # linenos='inline' + linespans='line': each source line is wrapped in
+        # `<span id="line-N" class="line"><span class="lineno">N</span>code</span>`.
+        # With CSS `.line { display: block; padding-left: Xem; text-indent: -Xem }`,
+        # wrapped continuations stay aligned past the lineno gutter — what
+        # `linenos='table'` cannot do, because numbers/code live in separate <pre>s
+        # and any wrap in code drifts the columns out of sync.
         _pygments_formatter_light = HtmlFormatter(
-            style="default", noclasses=False, linenos=False, nowrap=False,
-            cssclass="highlight")
+            style="default", noclasses=False, linenos="inline", nowrap=False,
+            cssclass="highlight", linespans="line")
         _pygments_formatter_dark = HtmlFormatter(
-            style="monokai", noclasses=False, linenos=False, nowrap=False,
-            cssclass="highlight")
+            style="monokai", noclasses=False, linenos="inline", nowrap=False,
+            cssclass="highlight", linespans="line")
         def _get(lang: str):
             try:
                 return get_lexer_by_name(lang, stripall=False)
@@ -474,12 +693,18 @@ def _pygments_css_pair() -> tuple[str, str]:
 
 
 def _wrap_tables(html_body: str) -> str:
-    """Wrap each <table>...</table> in `<div class="md-table-scroll">` so wide
-    tables get their own horizontal scrollbar instead of overflowing the page.
-    Idempotent for tables already wrapped."""
+    """Wrap each markdown <table>...</table> in `<div class="md-table-scroll">`
+    so wide tables get their own horizontal scrollbar instead of overflowing
+    the page. Skips pygments `.highlighttable` (line-number layout — already
+    has its own width handling and shouldn't get a scroll wrapper)."""
     import re
-    pat = re.compile(r"(<table\b[^>]*>.*?</table>)", re.DOTALL | re.IGNORECASE)
-    return pat.sub(r'<div class="md-table-scroll">\1</div>', html_body)
+    pat = re.compile(r"(<table\b[^>]*>)(.*?)(</table>)", re.DOTALL | re.IGNORECASE)
+    def repl(m):
+        opening = m.group(1)
+        if "highlighttable" in opening:
+            return m.group(0)
+        return f'<div class="md-table-scroll">{m.group(0)}</div>'
+    return pat.sub(repl, html_body)
 
 
 def _highlight_code_blocks(html_body: str) -> str:
@@ -543,9 +768,32 @@ def _share_page_css() -> str:
     .md code {{ background: var(--code-bg); padding: 1px 5px; border-radius: 3px;
                font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
                font-size: .92em; }}
-    .md pre {{ padding: 12px 14px; border-radius: 6px; overflow-x: auto;
-               background: var(--code-bg); border: 1px solid var(--bd-soft); }}
-    .md pre code {{ background: none; padding: 0; }}
+    .md pre {{ padding: 12px 14px; border-radius: 6px;
+               background: var(--code-bg); border: 1px solid var(--bd-soft);
+               white-space: pre-wrap; word-break: break-word; overflow-x: auto; }}
+    .md pre code {{ background: none; padding: 0;
+                   white-space: inherit; word-break: inherit; }}
+    /* pygments linenos='inline' + linespans='line':
+         <pre>
+           <span id="line-1"><span class="linenos">1</span>code</span>
+           ...
+         </pre>
+       Each source line is a span with id="line-N"; `display:block` +
+       `padding-left + text-indent` makes wrap continuations visually flow
+       past the lineno gutter without their own lineno span. .linenos is
+       unselectable so copy-paste skips line numbers. */
+    .highlight pre {{ white-space: pre-wrap; word-break: break-word;
+                     overflow-x: auto; padding: 12px 14px; }}
+    .highlight pre > span[id^="line-"] {{ display: block;
+                                         padding-left: 4em;
+                                         text-indent: -4em; }}
+    .highlight .linenos {{ display: inline-block; width: 3em;
+                          margin-right: 0.5em; padding-right: 0.5em;
+                          text-align: right; color: var(--fg-faint);
+                          border-right: 1px solid var(--bd-soft);
+                          user-select: none; -webkit-user-select: none;
+                          font-variant-numeric: tabular-nums;
+                          background: transparent !important; }}
     .md img {{ max-width: 100%; height: auto; border-radius: 4px; }}
     .md-table-scroll {{ overflow-x: auto; max-width: 100%;
                        margin: 12px 0; -webkit-overflow-scrolling: touch; }}
@@ -558,6 +806,33 @@ def _share_page_css() -> str:
     .img-wrap {{ text-align: center; }}
     .img-wrap img {{ max-width: 100%; max-height: 80vh;
                     box-shadow: 0 2px 8px var(--shadow); border-radius: 6px; }}
+    .pdf-wrap {{ width: 100%; }}
+    .pdf-wrap object {{ width: 100%; height: 85vh; border: 1px solid var(--bd);
+                       border-radius: 6px; background: #fff;
+                       box-shadow: 0 2px 8px var(--shadow); display: block; }}
+    .pdf-wrap .pdf-fallback-inner {{ padding: 32px; text-align: center;
+                                    color: var(--fg-muted); }}
+    .pdf-wrap .pdf-fallback {{ display: none; }}
+    /* Show the "open in new tab" hint only on coarse pointers (touchscreens
+       — phones / tablets). Desktop with mouse hides it: <object> already
+       renders PDF inline reliably there, so the hint would just be noise. */
+    @media (pointer: coarse) {{
+      .pdf-wrap .pdf-fallback {{ display: block; margin-top: 12px;
+                                padding: 10px 14px; background: var(--code-bg);
+                                border: 1px solid var(--bd-soft);
+                                border-radius: 6px; text-align: center;
+                                font-size: .9em; color: var(--fg-muted); }}
+      .pdf-wrap .pdf-fallback a {{ color: var(--link); font-weight: 600;
+                                  margin-left: 6px; }}
+    }}
+    .drawio-wrap {{ width: 100%; }}
+    .drawio-wrap iframe {{ width: 100%; height: 85vh; border: 1px solid var(--bd);
+                          border-radius: 6px; background: #fff;
+                          box-shadow: 0 2px 8px var(--shadow); }}
+    .html-wrap {{ width: 100%; }}
+    .html-wrap iframe {{ width: 100%; height: 85vh; border: 1px solid var(--bd);
+                        border-radius: 6px; background: #fff;
+                        box-shadow: 0 2px 8px var(--shadow); }}
     /* Pygments — light rule set is the baseline; the dark one overrides via
        prefers-color-scheme. Both reuse the same `.highlight` class names. */
     {light_pyg}

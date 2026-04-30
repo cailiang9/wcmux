@@ -50,6 +50,11 @@
   <!-- highlight.js via CDN -->
   <link id="hljs-theme" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <!-- latex/bibtex are not in highlight.js' common bundle; load them on demand -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/latex.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bibtex.min.js"></script>
+  <!-- line-numbers plugin: wraps each highlighted block into a 2-col table -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlightjs-line-numbers.js/2.8.0/highlightjs-line-numbers.min.js"></script>
   <script>
     // Apply saved theme immediately to avoid flash
     (function() {
@@ -212,8 +217,11 @@ async function load() {
       const div = document.createElement('div');
       div.className = 'md-body';
       div.innerHTML = data.html;
-      // highlight code blocks inside markdown
-      div.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+      // highlight code blocks inside markdown + line numbers
+      div.querySelectorAll('pre code').forEach(block => {
+        hljs.highlightElement(block);
+        if (hljs.lineNumbersBlock) hljs.lineNumbersBlock(block);
+      });
       content.innerHTML = '';
       content.appendChild(div);
 
@@ -225,7 +233,10 @@ async function load() {
       const wrap = renderCode(displayContent, data.lang);
       content.innerHTML = '';
       content.appendChild(wrap);
-      wrap.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+      wrap.querySelectorAll('pre code').forEach(block => {
+        hljs.highlightElement(block);
+        if (hljs.lineNumbersBlock) hljs.lineNumbersBlock(block);
+      });
 
     } else if (data.type === 'text') {
       const wrap = document.createElement('div');
@@ -246,11 +257,28 @@ async function load() {
       content.innerHTML = '';
       content.appendChild(wrap);
 
+    } else if (data.type === 'pdf') {
+      const wrap = document.createElement('div');
+      wrap.className = 'pdf-wrap';
+      const iframe = document.createElement('iframe');
+      iframe.src = '../../raw/preview?path=' + encodeURIComponent(path);
+      iframe.title = getFilename(path);
+      iframe.style.cssText = 'width:100%;height:85vh;border:none;background:#fff;border-radius:8px;';
+      wrap.appendChild(iframe);
+      content.innerHTML = '';
+      content.appendChild(wrap);
+
     } else if (data.type === 'html') {
       const wrap = document.createElement('div');
       wrap.className = 'html-wrap';
       const iframe = document.createElement('iframe');
-      iframe.src = '../../raw/preview?path=' + encodeURIComponent(path);
+      // Path-based URL so the iframe's document base URL preserves the
+      // file's directory; <img src="figure.png">, <video src="clip.mp4">,
+      // <link href="style.css"> etc. inside the HTML resolve to siblings
+      // and hit /raw/preview/<dir>/<asset>. encodeURIComponent each segment
+      // (preserves `/`) so spaces/Chinese/etc. are URL-safe.
+      const pathEncoded = path.split('/').map(encodeURIComponent).join('/');
+      iframe.src = '../../raw/preview/' + pathEncoded;
       iframe.style.cssText = 'width:100%;border:none;background:#fff;border-radius:8px;';
       // Auto-resize iframe height to content
       iframe.onload = () => {
