@@ -702,6 +702,7 @@
       case "end":   return csi("F");
       case "altbksp": return "\x1b\x7f";  // spec §4.15: backward-kill-word
       case "ctrlb":   return "\x02";      // spec §4.16: tmux prefix
+      case "ctrlbn":  return "\x02n";     // spec §4.24: tmux next-window combo
       case "rbracket":  return charKey("]");   // spec §4.17
       case "backtick":  return charKey("`");
       case "backslash": return charKey("\\");
