@@ -109,6 +109,11 @@ button.logout:hover { background: #444; }
   scrollbar-gutter: stable;
   scrollbar-width: thin;                              /* Firefox */
   scrollbar-color: rgba(255,255,255,0.22) transparent;/* Firefox: thumb / track */
+  /* Spec §4.25: hint to mobile browsers that this region wants vertical
+     panning. Single-finger swipes go straight to scrolling the scrollback
+     instead of being captured as terminal input gestures. */
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
 }
 .xterm-viewport::-webkit-scrollbar { width: 8px; height: 8px; }
 .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
@@ -128,7 +133,20 @@ button.logout:hover { background: #444; }
           z-index: 20;
           transition: bottom 120ms ease-out; }
 .kp-row { display: flex; gap: 3px; flex: 1 1 0; overflow-x: auto; white-space: nowrap; }
-.kp { flex: 1 1 auto; min-width: 32px; padding: 2px 4px;
+/* spec §4.25: keys pack to the right edge so a right-handed thumb reaches
+   the frequent keys first; less-used keys (⤒/⤓) sit on the DOM-left and
+   overflow off-screen on narrow phones until the user swipes the row
+   leftward. We use first-child margin-left:auto (NOT justify-content:
+   flex-end — that one strands left overflow as inaccessible negative
+   scroll); when items fit, the auto-margin absorbs the slack and pushes
+   keys right; when items overflow, the auto-margin collapses to 0 and JS
+   pins scrollLeft = scrollWidth so the right side is the default view. */
+.kp-row > :first-child { margin-left: auto; }
+/* spec §4.25: keys take their natural content width (flex: 0 0 auto) so
+   multi-char labels like Home/PgUp/Ctrl never get clipped. min-width keeps
+   single-char keys tappable. Row overflows horizontally when total exceeds
+   viewport width — covered by .kp-row overflow-x: auto above. */
+.kp { flex: 0 0 auto; min-width: 36px; padding: 2px 6px; white-space: nowrap;
       background: #222; color: #ccc;
       border: 1px solid #333; border-radius: 3px; cursor: pointer;
       font-family: Menlo, monospace; font-size: .78rem; line-height: 1.1;
@@ -138,5 +156,6 @@ button.logout:hover { background: #444; }
 .kp.mod.on { background: #2d4a6a; border-color: #3a5f86; color: #fff; }
 @media (max-width: 600px) {
   :root { --kp-h: 68px; }
-  .kp { font-size: .85rem; padding: 3px 4px; min-width: 30px; }
+  /* 移动端压缩横向 padding 让一行能多塞 1–2 颗键，文字仍完整 */
+  .kp { font-size: .85rem; padding: 3px 4px; min-width: 32px; }
 }

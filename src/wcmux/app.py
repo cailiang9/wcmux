@@ -109,6 +109,10 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request, _=Depends(require_auth)) -> HTMLResponse:
+        # spec §4.25: cache-bust handled inside the template via a random
+        # `?v=` query on app.js / style.css URLs (Jinja `range|random`); no
+        # state needed in the route, no Python restart needed when static
+        # files change.
         return templates.TemplateResponse(
             request, "terminal.html", {"base_url": config.base_url}
         )

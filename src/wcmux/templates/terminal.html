@@ -8,7 +8,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
-  <link rel="stylesheet" href="{{ base_url }}/static/style.css" />
+  <link rel="stylesheet" href="{{ base_url }}/static/style.css?v={{ range(1, 999999) | random }}" />
 </head>
 <body>
   <div id="toolbar">
@@ -40,6 +40,13 @@
   <div id="terminals"></div>
   <div id="keypad">
     <div class="kp-row">
+      <!-- Spec §4.25: scroll-top/bot live at the LEFT — keypad is right-
+           aligned and pre-scrolled to its end, so right-handed users see the
+           frequent keys (Ctrl, Alt, Esc, ^B, ⌥⌫…) by default and these two
+           less-used buttons sit just off-screen on a narrow phone, accessible
+           by a left swipe within the row. -->
+      <button class="kp"     data-action="scroll-top" title="Scroll to oldest line">⤒</button>
+      <button class="kp"     data-action="scroll-bot" title="Scroll to newest line">⤓</button>
       <button class="kp mod" data-mod="ctrl"  title="Ctrl (sticky)">Ctrl</button>
       <button class="kp mod" data-mod="alt"   title="Alt (sticky)">Alt</button>
       <button class="kp"     data-key="esc"   title="Escape">Esc</button>
@@ -53,6 +60,7 @@
     <div class="kp-row">
       <button class="kp"     data-key="pgup"  title="Page Up">PgUp</button>
       <button class="kp"     data-key="pgdn"  title="Page Down">PgDn</button>
+      <button class="kp"     data-key="braces" title="{ } pair">{}</button>
       <button class="kp"     data-key="rbracket" title="]">]</button>
       <button class="kp"     data-key="backtick" title="Backtick">`</button>
       <button class="kp"     data-key="backslash" title="Backslash">\</button>
@@ -65,6 +73,6 @@
   <script>
     window.WCMUX_BASE_URL = {{ base_url|tojson }};
   </script>
-  <script src="{{ base_url }}/static/app.js"></script>
+  <script src="{{ base_url }}/static/app.js?v={{ range(1, 999999) | random }}"></script>
 </body>
 </html>

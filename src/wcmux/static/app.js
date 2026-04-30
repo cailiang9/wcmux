@@ -199,6 +199,9 @@
       fontSize: 13,
       cursorBlink: true,
       convertEol: false,
+      // spec §4.25: keep enough scrollback for reviewing older terminal
+      // history on mobile (default 1000 is too tight).
+      scrollback: 10000,
       theme: { background: "#0c0c0c" },
     });
     const fit = new FitAddon.FitAddon();
@@ -706,6 +709,7 @@
       case "rbracket":  return charKey("]");   // spec §4.17
       case "backtick":  return charKey("`");
       case "backslash": return charKey("\\");
+      case "braces":    return "{}";            // spec §4.25: literal pair for shell brace expansion
       default: return "";
     }
   }
@@ -724,6 +728,38 @@
     });
     btn.addEventListener("mousedown", (e) => e.preventDefault());
   });
+
+  // Spec §4.25: action buttons (scroll-top / scroll-bot) drive xterm
+  // navigation locally instead of sending bytes to the PTY. Use pointerdown
+  // (mirrors the data-key handler in §4.14) so iOS Safari fires reliably —
+  // synthesized click after touch can be suppressed in some scenarios.
+  document.querySelectorAll("#keypad .kp[data-action]").forEach((btn) => {
+    const action = btn.dataset.action;
+    const fire = () => {
+      const t = activeId && tabs.get(activeId);
+      if (!t || !t.term) return;
+      if (action === "scroll-top") t.term.scrollToTop();
+      else if (action === "scroll-bot") t.term.scrollToBottom();
+    };
+    btn.addEventListener("pointerdown", (e) => { e.preventDefault(); fire(); });
+    // Keyboard / accessibility fallback (Space / Enter synthesize a click).
+    btn.addEventListener("click", () => fire());
+  });
+
+  // Spec §4.25: pin each kp-row's horizontal scroll to its right end so the
+  // visible-by-default keys are the right-aligned frequent ones; left-side
+  // overflow keys (⤒/⤓) require a swipe.
+  function pinKpRowsRight() {
+    document.querySelectorAll("#keypad .kp-row").forEach((row) => {
+      if (row.scrollWidth > row.clientWidth) {
+        row.scrollLeft = row.scrollWidth;
+      }
+    });
+  }
+  // Defer one frame so flex layout has measured before we set scrollLeft.
+  requestAnimationFrame(pinKpRowsRight);
+  window.addEventListener("resize", pinKpRowsRight);
+  window.addEventListener("orientationchange", pinKpRowsRight);
 
   // Spec §4.14: non-modifier keypad buttons support press-and-hold repeat.
   const REPEAT_DELAY_MS = 400;
